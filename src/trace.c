@@ -288,12 +288,11 @@ static void emit_line(struct audit *au, unsigned long *order, int stream,
 static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
                     const char *data, size_t n)
 {
-	/* Grow to fit len+n plus a NUL. Reallocate on every feed (cap only ever
-	 * grows, so it is a cheap no-op once the buffer already fits) to keep the
-	 * allocation size provably in sync with `cap` for the copies below. */
-	if (lb->len + n + 1 > lb->cap)
-		lb->cap = lb->len + n + 1;
-	lb->buf = xrealloc(lb->buf, lb->cap);
+	size_t need = lb->len + n + 1;
+	if (need > lb->cap) {
+		lb->cap = need;
+		lb->buf = xrealloc(lb->buf, lb->cap);
+	}
 	memcpy(lb->buf + lb->len, data, n);
 	lb->len += n;
 
@@ -304,9 +303,15 @@ static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
 			start = i + 1;
 		}
 	}
+	/* Shift any partial trailing line to the front. The copy runs forward and
+	 * the destination index trails the source (start > 0), so it is a safe
+	 * left shift; an element copy also sidesteps a bulk memmove whose bound the
+	 * analyzer cannot track across the emit_line calls above. */
 	if (start > 0) {
-		memmove(lb->buf, lb->buf + start, lb->len - start);
-		lb->len -= start;
+		size_t rem = lb->len - start;
+		for (size_t i = 0; i < rem; i++)
+			lb->buf[i] = lb->buf[start + i];
+		lb->len = rem;
 	}
 }
 
