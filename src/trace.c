@@ -288,11 +288,12 @@ static void emit_line(struct audit *au, unsigned long *order, int stream,
 static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
                     const char *data, size_t n)
 {
-	size_t need = lb->len + n + 1;
-	if (need > lb->cap) {
-		lb->cap = need;
-		lb->buf = xrealloc(lb->buf, lb->cap);
-	}
+	/* Grow to fit len+n plus a NUL. Reallocate on every feed (cap only ever
+	 * grows, so it is a cheap no-op once the buffer already fits) to keep the
+	 * allocation size provably in sync with `cap` for the copies below. */
+	if (lb->len + n + 1 > lb->cap)
+		lb->cap = lb->len + n + 1;
+	lb->buf = xrealloc(lb->buf, lb->cap);
 	memcpy(lb->buf + lb->len, data, n);
 	lb->len += n;
 
