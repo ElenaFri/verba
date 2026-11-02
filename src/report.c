@@ -14,22 +14,19 @@ static const char *finding_label(enum finding_type t)
 		return "undeclared write";
 	case F_DISCOURSE_MISMATCH:
 		return "discourse mismatch";
+	case F_MISTRANSLATION:
+		return "mistranslation";
 	}
 	return "?";
 }
 
-void report_human(FILE *out, const struct audit *au, const struct vec *findings)
+/* Print the findings whose heuristic flag matches, one block each. */
+static void report_block(FILE *out, const struct vec *findings, int heuristic)
 {
-	if (findings->len == 0) {
-		fprintf(out, "verba: no contradictions found.\n");
-		return;
-	}
-
-	fprintf(out, "verba: %zu contradiction%s between words and syscalls:\n\n",
-	        findings->len, findings->len == 1 ? "" : "s");
-
 	for (size_t i = 0; i < findings->len; i++) {
 		const struct finding *f = findings->data[i];
+		if (f->heuristic != heuristic)
+			continue;
 		fprintf(out, "  [%s]", finding_label(f->type));
 		if (f->path)
 			fprintf(out, " %s", f->path);
@@ -41,6 +38,33 @@ void report_human(FILE *out, const struct audit *au, const struct vec *findings)
 		if (f->evidence_deed)
 			fprintf(out, "      deed:  %s\n", f->evidence_deed);
 		fprintf(out, "\n");
+	}
+}
+
+void report_human(FILE *out, const struct audit *au, const struct vec *findings)
+{
+	size_t mech = findings_count(findings, 0);
+	size_t heur = findings_count(findings, 1);
+
+	if (mech == 0 && heur == 0) {
+		fprintf(out, "verba: no contradictions found.\n");
+		return;
+	}
+
+	if (mech > 0) {
+		fprintf(out,
+		        "verba: %zu contradiction%s between words and syscalls:\n\n",
+		        mech, mech == 1 ? "" : "s");
+		report_block(out, findings, 0);
+	} else {
+		fprintf(out, "verba: no mechanical contradictions found.\n\n");
+	}
+
+	if (heur > 0) {
+		fprintf(out,
+		        "verba: %zu heuristic finding%s (errno vs. claim):\n\n",
+		        heur, heur == 1 ? "" : "s");
+		report_block(out, findings, 1);
 	}
 
 	if (au->exited)
@@ -94,7 +118,7 @@ static void json_str(FILE *out, const char *s)
 void report_json(FILE *out, const struct audit *au, const struct vec *findings)
 {
 	fputs("{\n", out);
-	fputs("  \"schema\": 1,\n", out);
+	fputs("  \"schema\": 2,\n", out);
 
 	fputs("  \"command\": [", out);
 	for (int i = 0; au->argv && au->argv[i]; i++) {
@@ -118,6 +142,8 @@ void report_json(FILE *out, const struct audit *au, const struct vec *findings)
 		fputs(i ? ",\n" : "\n", out);
 		fputs("    {\"type\": ", out);
 		json_str(out, finding_type_name(f->type));
+		fprintf(out, ", \"heuristic\": %s",
+		        f->heuristic ? "true" : "false");
 		fputs(", \"path\": ", out);
 		json_str(out, f->path);
 		fputs(", \"detail\": ", out);

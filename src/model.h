@@ -40,10 +40,12 @@ enum finding_type {
 	F_FAITHLESS_CLAIM,
 	F_UNDECLARED_WRITE,
 	F_DISCOURSE_MISMATCH,
+	F_MISTRANSLATION,
 };
 
 struct finding {
 	enum finding_type type;
+	int heuristic;       /* 1 = phase-2 heuristic, 0 = mechanical */
 	char *path;          /* path involved, or NULL */
 	char *evidence_word; /* the offending output line, or NULL */
 	char *evidence_deed; /* the relevant syscall, or NULL */
@@ -70,6 +72,14 @@ const char *finding_type_name(enum finding_type t);
 void out_line_free(void *p);
 void file_event_free(void *p);
 void finding_free(void *p);
+
+/* Append a finding (copies every string). `heuristic` tags it phase-2. */
+void findings_add(struct vec *findings, enum finding_type type, int heuristic,
+                  const char *path, const char *word, const char *deed,
+                  const char *detail);
+
+/* Count findings whose heuristic flag matches `heuristic` (0 or 1). */
+size_t findings_count(const struct vec *findings, int heuristic);
 
 void audit_free(struct audit *au);
 void findings_free(struct vec *findings);

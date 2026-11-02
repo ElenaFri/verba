@@ -18,6 +18,12 @@ Pure C, libc only, no runtime dependencies. Traced via `ptrace` (not
 | **faithless claim** | output claims a write to a path that no traced process ever opened for writing |
 | **undeclared write** | a file was created/modified/removed on disk, but no output line mentions it |
 | **discourse mismatch** | output says "success" while the command failed (exit ≠ 0), or says "error" while it exited 0 |
+| **mistranslation** *(heuristic)* | error wording disagrees with the real `errno` — "permission denied" when the call actually failed with `ENOENT`, or "saved" when it failed |
+
+The first three are **mechanical**: a disagreement between the output and the
+kernel, reported by default. The last is a **heuristic** (phase 2): it matches
+error phrasings against a small built-in `errno` dictionary and is only computed
+with `--heuristic` or `--strict` (see below).
 
 Writes under `/tmp`, `/dev`, `/proc`, `/sys`, `/run`, `$TMPDIR`, and to
 non-files (pipes, sockets) are ignored as undeclared writes; add more with
@@ -33,6 +39,10 @@ verba [options] <command> [args...]
       --json         write the JSON report to stdout
   -o, --output FILE  write the JSON report to FILE (human summary still on stdout)
       --allow PREFIX  treat writes under PREFIX as declared (repeatable)
+      --heuristic    also run the phase-2 mistranslation checks (errno vs.
+                     claim), reported in a separate block; does not affect
+                     the exit code
+      --strict       run the heuristics and count them toward the exit code
 ```
 
 Exit codes: `0` faithful · `1` contradictions found · `2` usage/internal error.
@@ -63,7 +73,8 @@ command exited with status 1.
 ```
 
 `--json` emits the same findings plus the full claim and trace tables under a
-versioned schema (`"schema": 1`).
+versioned schema (`"schema": 2`). Each finding carries a `"heuristic"` flag
+(`true` for phase-2 mistranslations, `false` for the mechanical checks).
 
 ## Build
 

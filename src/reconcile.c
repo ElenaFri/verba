@@ -76,13 +76,7 @@ static void add_finding(struct vec *findings, enum finding_type type,
                         const char *path, const char *word, const char *deed,
                         const char *detail)
 {
-	struct finding *f = xmalloc(sizeof *f);
-	f->type = type;
-	f->path = path ? xstrdup(path) : NULL;
-	f->evidence_word = word ? xstrdup(word) : NULL;
-	f->evidence_deed = deed ? xstrdup(deed) : NULL;
-	f->detail = detail ? xstrdup(detail) : NULL;
-	vec_push(findings, f);
+	findings_add(findings, type, 0, path, word, deed, detail);
 }
 
 /* ---- deeds: which files were opened for writing vs. actually changed ---- */

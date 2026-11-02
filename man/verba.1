@@ -37,6 +37,19 @@ and to non-files (pipes, sockets) are ignored; extend the set with
 .B discourse mismatch
 The output reports success while the command failed (exit status other than 0),
 or reports an error while the command exited 0.
+.TP
+.BR mistranslation " (heuristic)"
+The error wording disagrees with the real
+.IR errno :
+the output blames "permission denied" while the call actually failed with
+.BR ENOENT ,
+or claims a write that in fact failed. This class is a heuristic (phase 2),
+matched against a built-in
+.I errno
+dictionary, and is only computed with
+.B \-\-heuristic
+or
+.BR \-\-strict .
 .PP
 .B verba
 is pure C with no runtime dependencies and targets x86-64.
@@ -60,6 +73,16 @@ the human-readable summary is still printed to standard output.
 Treat writes under
 .I PREFIX
 as declared. May be given more than once.
+.TP
+.B \-\-heuristic
+Also run the phase-2 mistranslation checks
+.RI ( errno
+versus claim). The findings are reported in a separate block and do
+.I not
+affect the exit status.
+.TP
+.B \-\-strict
+Run the heuristic checks and count their findings toward the exit status.
 .SH EXIT STATUS
 .TP
 .B 0

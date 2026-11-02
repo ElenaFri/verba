@@ -98,6 +98,38 @@ else
 	printf '%s\n' "$out"
 fi
 
+# mistranslator: a phase-2 heuristic finding only (errno vs. claim).
+# Default: heuristics off -> faithful, exit 0, no 'mistranslation' in output.
+out=$("$verba" --json ./fixtures/mistranslator.sh 2>&1)
+code=$?
+if [ "$code" -eq 0 ] && ! printf '%s' "$out" | grep -q 'mistranslation'; then
+	pass "mistranslator: silent without --heuristic/--strict"
+else
+	bad "mistranslator default (exit $code):"
+	printf '%s\n' "$out"
+fi
+
+# --heuristic: report the mistranslation but keep the exit code mechanical (0).
+out=$("$verba" --json --heuristic ./fixtures/mistranslator.sh 2>&1)
+code=$?
+if [ "$code" -eq 0 ] && printf '%s' "$out" | grep -q 'mistranslation' &&
+	printf '%s' "$out" | grep -q '"heuristic": true'; then
+	pass "mistranslator: --heuristic reports it, exit stays 0"
+else
+	bad "mistranslator --heuristic (exit $code):"
+	printf '%s\n' "$out"
+fi
+
+# --strict: the heuristic finding now counts toward the exit code (1).
+out=$("$verba" --json --strict ./fixtures/mistranslator.sh 2>&1)
+code=$?
+if [ "$code" -eq 1 ] && printf '%s' "$out" | grep -q 'mistranslation'; then
+	pass "mistranslator: --strict fails (exit 1)"
+else
+	bad "mistranslator --strict (exit $code):"
+	printf '%s\n' "$out"
+fi
+
 # Human report (no --json) with a finding: faithless claim, exit 1.
 out=$("$verba" echo "Saved /no/such/verba/phantom.conf" 2>&1)
 code=$?
@@ -110,7 +142,7 @@ fi
 
 # -o writes a JSON report to a file and the human summary to stdout.
 if "$verba" -o "$work/cli.json" echo hi >/dev/null 2>&1 &&
-	grep -q '"schema": 1' "$work/cli.json" 2>/dev/null; then
+	grep -q '"schema": 2' "$work/cli.json" 2>/dev/null; then
 	pass "-o writes a JSON report file"
 else
 	bad "-o did not write a JSON report file"

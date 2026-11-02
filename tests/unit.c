@@ -10,8 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
+#include "heuristic.h"
 #include "model.h"
+#include "patterns.h"
 #include "reconcile.h"
 #include "report.h"
 #include "util.h"
@@ -238,6 +241,7 @@ static void test_model_names(void)
 	CHECK_STR(finding_type_name(F_FAITHLESS_CLAIM), "faithless_claim");
 	CHECK_STR(finding_type_name(F_UNDECLARED_WRITE), "undeclared_write");
 	CHECK_STR(finding_type_name(F_DISCOURSE_MISMATCH), "discourse_mismatch");
+	CHECK_STR(finding_type_name(F_MISTRANSLATION), "mistranslation");
 	CHECK_STR(finding_type_name((enum finding_type)999), "?");
 }
 
@@ -365,6 +369,128 @@ static void test_reconcile_discourse(void)
 	audit_free(&au3);
 }
 
+/* ---- patterns.c ---- */
+
+static void test_patterns(void)
+{
+	/* names: a known code resolves, an unknown one is NULL. */
+	CHECK(errno_name(ENOENT) != NULL);
+	if (errno_name(ENOENT))
+		CHECK_STR(errno_name(ENOENT), "ENOENT");
+	CHECK(errno_name(-12345) == NULL);
+
+	/* families: EACCES and EPERM collapse together; ENOENT stands apart. */
+	CHECK(errno_family(EACCES) == errno_family(EPERM));
+	CHECK(errno_family(ENOENT) != errno_family(EACCES));
+
+	int codes[8];
+	/* one phrase -> one code. */
+	CHECK(errno_phrases_in_line("error: no such file", codes, 8) == 1);
+	/* two same-family phrases dedupe to one. */
+	CHECK(errno_phrases_in_line("permission denied, access denied", codes,
+	                            8) == 1);
+	/* two distinct families -> two codes. */
+	CHECK(errno_phrases_in_line("no such file and permission denied", codes,
+	                            8) == 2);
+	/* nothing recognisable -> zero. */
+	CHECK(errno_phrases_in_line("everything is fine here", codes, 8) == 0);
+}
+
+/* ---- heuristic.c ---- */
+
+static void test_heuristic(void)
+{
+	/* (a) error wording blames the wrong errno: EACCES said, ENOENT real. */
+	struct audit au = {0};
+	push_line(&au, 2,
+	          "cannot create /no/such/verba/out.txt: permission denied");
+	push_evt(&au, ACT_OPEN_WRITE, "/no/such/verba/out.txt", NULL, ENOENT,
+	         "openat");
+	struct vec f = {0};
+	reconcile_heuristic(&au, &f);
+	CHECK(f.len == 1);
+	CHECK(has_finding(&f, F_MISTRANSLATION));
+	if (f.len == 1) {
+		const struct finding *x = f.data[0];
+		CHECK(x->heuristic == 1);
+	}
+	findings_free(&f);
+	audit_free(&au);
+
+	/* (b) false success: a write claim over a path whose write failed. */
+	struct audit au2 = {0};
+	push_line(&au2, 1, "Saved results to /no/such/verba/s.txt");
+	push_evt(&au2, ACT_OPEN_WRITE, "/no/such/verba/s.txt", NULL, EACCES,
+	         "openat");
+	struct vec f2 = {0};
+	reconcile_heuristic(&au2, &f2);
+	CHECK(has_finding(&f2, F_MISTRANSLATION));
+	findings_free(&f2);
+	audit_free(&au2);
+
+	/* (c) wording agrees with the real errno: no finding. */
+	struct audit au3 = {0};
+	push_line(&au3, 2, "/no/such/verba/x.txt: no such file");
+	push_evt(&au3, ACT_OPEN_WRITE, "/no/such/verba/x.txt", NULL, ENOENT,
+	         "openat");
+	struct vec f3 = {0};
+	reconcile_heuristic(&au3, &f3);
+	CHECK(f3.len == 0);
+	findings_free(&f3);
+	audit_free(&au3);
+
+	/* (d) the failed path is never named in the output: no finding. */
+	struct audit au4 = {0};
+	push_line(&au4, 2, "something went wrong somewhere");
+	push_evt(&au4, ACT_OPEN_WRITE, "/no/such/verba/hidden.txt", NULL, EACCES,
+	         "openat");
+	struct vec f4 = {0};
+	reconcile_heuristic(&au4, &f4);
+	CHECK(f4.len == 0);
+	findings_free(&f4);
+	audit_free(&au4);
+
+	/* (e) a successful event (err == 0) is never a mistranslation. */
+	struct audit au5 = {0};
+	push_line(&au5, 1, "Saved results to /no/such/verba/ok.txt");
+	push_evt(&au5, ACT_OPEN_WRITE, "/no/such/verba/ok.txt", NULL, 0,
+	         "openat");
+	struct vec f5 = {0};
+	reconcile_heuristic(&au5, &f5);
+	CHECK(f5.len == 0);
+	findings_free(&f5);
+	audit_free(&au5);
+
+	/* (f) two failed events on one path -> at most one mistranslation. */
+	struct audit au6 = {0};
+	push_line(&au6, 2,
+	          "cannot create /no/such/verba/dup.txt: permission denied");
+	push_evt(&au6, ACT_OPEN_WRITE, "/no/such/verba/dup.txt", NULL, ENOENT,
+	         "openat");
+	push_evt(&au6, ACT_OPEN_WRITE, "/no/such/verba/dup.txt", NULL, ENOENT,
+	         "openat");
+	struct vec f6 = {0};
+	reconcile_heuristic(&au6, &f6);
+	CHECK(f6.len == 1);
+	findings_free(&f6);
+	audit_free(&au6);
+
+	/* (g) an errno with no known name is labelled "errno N". */
+	struct audit au7 = {0};
+	push_line(&au7, 1, "Saved results to /no/such/verba/unk.txt");
+	push_evt(&au7, ACT_OPEN_WRITE, "/no/such/verba/unk.txt", NULL, 9999,
+	         "openat");
+	struct vec f7 = {0};
+	reconcile_heuristic(&au7, &f7);
+	CHECK(f7.len == 1);
+	if (f7.len == 1) {
+		const struct finding *x = f7.data[0];
+		CHECK(strstr(x->evidence_deed, "errno 9999") != NULL);
+	}
+	findings_free(&f7);
+	audit_free(&au7);
+}
+
 /* ---- report.c ---- */
 
 static char *capture_human(const struct audit *au, const struct vec *f)
@@ -393,6 +519,7 @@ static void add_finding_ut(struct vec *f, enum finding_type t, const char *path,
 {
 	struct finding *x = xmalloc(sizeof *x);
 	x->type = t;
+	x->heuristic = 0;
 	x->path = path ? xstrdup(path) : NULL;
 	x->evidence_word = word ? xstrdup(word) : NULL;
 	x->evidence_deed = deed ? xstrdup(deed) : NULL;
@@ -444,6 +571,27 @@ static void test_report_human(void)
 	CHECK(strstr(out, "[?]") != NULL);
 	free(out);
 	findings_free(&f2);
+
+	/* mechanical + heuristic: two sections, each with its own heading. */
+	struct vec f3 = {0};
+	add_finding_ut(&f3, F_FAITHLESS_CLAIM, "/m", NULL, NULL, NULL);
+	findings_add(&f3, F_MISTRANSLATION, 1, "/h", "it said EACCES",
+	             "openat failed with ENOENT", "wrong errno");
+	out = capture_human(&au, &f3);
+	CHECK(strstr(out, "contradiction") != NULL);
+	CHECK(strstr(out, "heuristic finding") != NULL);
+	CHECK(strstr(out, "[mistranslation] /h") != NULL);
+	free(out);
+	findings_free(&f3);
+
+	/* heuristic only: the "no mechanical contradictions" preface appears. */
+	struct vec f4 = {0};
+	findings_add(&f4, F_MISTRANSLATION, 1, "/h", NULL, NULL, "wrong errno");
+	out = capture_human(&au, &f4);
+	CHECK(strstr(out, "no mechanical contradictions") != NULL);
+	CHECK(strstr(out, "heuristic finding") != NULL);
+	free(out);
+	findings_free(&f4);
 }
 
 static void test_report_json(void)
@@ -464,8 +612,9 @@ static void test_report_json(void)
 	               "deed", "detail");
 
 	char *out = capture_json(&au, &f);
-	CHECK(strstr(out, "\"schema\": 1") != NULL);
+	CHECK(strstr(out, "\"schema\": 2") != NULL);
 	CHECK(strstr(out, "\"command\": [\"cmd\", \"arg\"]") != NULL);
+	CHECK(strstr(out, "\"heuristic\": false") != NULL);
 	CHECK(strstr(out, "\"stream\": \"stdout\"") != NULL);
 	CHECK(strstr(out, "\"stream\": \"stderr\"") != NULL);
 	CHECK(strstr(out, "\"action\": \"rename\"") != NULL);
@@ -482,6 +631,17 @@ static void test_report_json(void)
 	free(out);
 	findings_free(&f);
 	audit_free(&au);
+
+	/* a heuristic finding carries "heuristic": true. */
+	struct audit auh = {0};
+	struct vec fh = {0};
+	findings_add(&fh, F_MISTRANSLATION, 1, "/h", NULL, "deed", "detail");
+	out = capture_json(&auh, &fh);
+	CHECK(strstr(out, "\"type\": \"mistranslation\"") != NULL);
+	CHECK(strstr(out, "\"heuristic\": true") != NULL);
+	free(out);
+	findings_free(&fh);
+	audit_free(&auh);
 
 	/* the empty-collections path: no argv, no findings/claims/trace. */
 	struct audit empty = {0};
@@ -515,6 +675,8 @@ int main(void)
 	test_words();
 	test_extract_paths();
 	test_model_names();
+	test_patterns();
+	test_heuristic();
 	test_reconcile_faithless();
 	test_reconcile_undeclared_and_whitelist();
 	test_reconcile_discourse();

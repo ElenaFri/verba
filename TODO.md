@@ -137,12 +137,17 @@ classes with their evidence lines, and the README's table is real.
 
 ## Phase 2 — mistranslation auditing (heuristic, opt-in flag)
 
-- [ ] errno-vs-claim reconciliation: program prints "file not found" while the
+- [x] errno-vs-claim reconciliation: program prints "file not found" while the
   failed call was `EACCES`; "saved" while the call returned `EPERM`.
+  (`src/heuristic.c`; the failed write-open events the tracer already records
+  are matched, per named path, against a built-in errno↔phrase dictionary.)
 - [ ] Community pattern database (TOML/JSON, user-extensible — the
-  *faux-amis dictionary* of error phrasings, English first).
-- [ ] Reports tagged `heuristic` — never mixed with mechanical findings
-  in default output; `--strict` fails on them too.
+  *faux-amis dictionary* of error phrasings, English first). Deferred: a
+  curated **built-in** table ships in `src/patterns.c`; an external,
+  user-editable file is the remaining work.
+- [x] Reports tagged `heuristic` — never mixed with mechanical findings
+  in default output; `--heuristic` reports them in a separate block without
+  changing the exit code, `--strict` also fails on them.
 
 ## Phase 3 — polish
 
@@ -156,5 +161,8 @@ classes with their evidence lines, and the README's table is real.
 
 *Status: phase 0 complete; phase 1 (the mechanical audit) complete and
 valgrind-clean — verba traces a command and reports the three anomaly classes,
-with the test suite at ≈ 99.9% line coverage. Phase 2 (mistranslation auditing)
-is next. This file is updated before each release.*
+with the test suite at ≈ 99.9% line coverage. Phase 2 (opt-in, heuristic
+mistranslation auditing: errno vs. claim, behind `--heuristic`/`--strict`) is
+in place against a built-in errno↔phrase dictionary; the external, user-editable
+pattern database is the remaining phase-2 item. This file is updated before each
+release.*

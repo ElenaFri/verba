@@ -12,6 +12,7 @@
 #include <errno.h>
 
 #include "model.h"
+#include "heuristic.h"
 #include "reconcile.h"
 #include "report.h"
 #include "trace.h"
@@ -50,12 +51,20 @@ static void print_usage(FILE *out)
 		"  -o, --output FILE    write the JSON report to FILE\n"
 		"      --allow PREFIX   treat writes under PREFIX as declared "
 		"(repeatable)\n"
+		"      --heuristic      also run phase-2 mistranslation checks "
+		"(errno vs. claim),\n"
+		"                       reported separately; does not affect the "
+		"exit code\n"
+		"      --strict         run the heuristics and count them toward "
+		"the exit code\n"
 		"\n"
 		"verba runs <command> under ptrace and reports contradictions between\n"
 		"what it prints and the file syscalls it actually makes:\n"
 		"  faithless claim     output claims a write that never happened\n"
 		"  undeclared write    a file changed on disk, unmentioned in output\n"
 		"  discourse mismatch  success/error text disagrees with the exit code\n"
+		"  mistranslation      error wording disagrees with the real errno "
+		"(heuristic)\n"
 		"\n"
 		"Exit codes:\n"
 		"  0  faithful (no contradictions)\n"
@@ -73,6 +82,8 @@ struct options {
 	const char *output;
 	char **allow;
 	int nallow;
+	int heuristic; /* run phase-2 checks, report them separately */
+	int strict;    /* run phase-2 checks and fail (exit 1) on them too */
 	int cmd_index; /* index of <command> in argv, or argc if none */
 };
 
@@ -119,6 +130,16 @@ static enum parse_result parse_args(int argc, char **argv, struct options *opt)
 		}
 		if (strcmp(arg, "--json") == 0) {
 			opt->json = 1;
+			i++;
+			continue;
+		}
+		if (strcmp(arg, "--heuristic") == 0) {
+			opt->heuristic = 1;
+			i++;
+			continue;
+		}
+		if (strcmp(arg, "--strict") == 0) {
+			opt->strict = 1;
 			i++;
 			continue;
 		}
@@ -196,6 +217,8 @@ int main(int argc, char **argv)
 
 	struct vec findings = {0};
 	reconcile(&au, &findings, opt.allow, opt.nallow);
+	if (opt.heuristic || opt.strict)
+		reconcile_heuristic(&au, &findings);
 
 	if (opt.output) {
 		FILE *f = fopen(opt.output, "w");
@@ -216,7 +239,10 @@ int main(int argc, char **argv)
 		report_human(stdout, &au, &findings);
 	}
 
-	int code = findings.len > 0 ? EXIT_FINDINGS : EXIT_FAITHFUL;
+	size_t mech = findings_count(&findings, 0);
+	size_t heur = findings_count(&findings, 1);
+	int code = (mech > 0 || (opt.strict && heur > 0)) ? EXIT_FINDINGS
+	                                                  : EXIT_FAITHFUL;
 
 	findings_free(&findings);
 	audit_free(&au);

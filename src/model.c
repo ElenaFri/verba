@@ -1,4 +1,5 @@
 #include "model.h"
+#include "util.h"
 
 #include <stdlib.h>
 
@@ -30,6 +31,8 @@ const char *finding_type_name(enum finding_type t)
 		return "undeclared_write";
 	case F_DISCOURSE_MISMATCH:
 		return "discourse_mismatch";
+	case F_MISTRANSLATION:
+		return "mistranslation";
 	}
 	return "?";
 }
@@ -68,4 +71,29 @@ void audit_free(struct audit *au)
 void findings_free(struct vec *findings)
 {
 	vec_free(findings, finding_free);
+}
+
+void findings_add(struct vec *findings, enum finding_type type, int heuristic,
+                  const char *path, const char *word, const char *deed,
+                  const char *detail)
+{
+	struct finding *f = xmalloc(sizeof *f);
+	f->type = type;
+	f->heuristic = heuristic;
+	f->path = path ? xstrdup(path) : NULL;
+	f->evidence_word = word ? xstrdup(word) : NULL;
+	f->evidence_deed = deed ? xstrdup(deed) : NULL;
+	f->detail = detail ? xstrdup(detail) : NULL;
+	vec_push(findings, f);
+}
+
+size_t findings_count(const struct vec *findings, int heuristic)
+{
+	size_t n = 0;
+	for (size_t i = 0; i < findings->len; i++) {
+		const struct finding *f = findings->data[i];
+		if (f->heuristic == heuristic)
+			n++;
+	}
+	return n;
 }

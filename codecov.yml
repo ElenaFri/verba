@@ -1,0 +1,28 @@
+# Codecov configuration.
+#
+# verba keeps line coverage comfortably above the 95% floor documented in
+# TODO.md. By default Codecov's "project" status compares against the parent
+# commit with a zero threshold, so any sub-percent fluctuation (e.g. a defensive
+# branch reachable only in some environments) turns the pipeline red. Pin the
+# statuses to the real floor instead, with a little slack, so they fail on a
+# genuine regression rather than on noise.
+
+coverage:
+  status:
+    project:
+      default:
+        target: 95%
+        threshold: 1%
+    patch:
+      default:
+        target: 90%
+        threshold: 5%
+
+# Coverage is measured once (glibc + lcov); the build/valgrind matrix uploads
+# nothing, so a single report is the whole picture.
+codecov:
+  require_ci_to_pass: true
+
+comment:
+  layout: "reach, diff, files"
+  require_changes: true

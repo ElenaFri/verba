@@ -23,8 +23,8 @@ OBJ := $(SRC:.c=.o)
 
 # The unit tests link the pure-logic objects (everything bar the ptrace tracer
 # and the CLI entry point, which carry ptrace/main() and are covered end-to-end).
-UNIT_OBJ := src/model.o src/reconcile.o src/report.o src/util.o src/vec.o \
-            src/words.o
+UNIT_OBJ := src/heuristic.o src/model.o src/patterns.o src/reconcile.o \
+            src/report.o src/util.o src/vec.o src/words.o
 TESTBINS := tests/unit tests/syscall_zoo
 
 # The syscall zoo is never instrumented: it is coverage *input* (run under
