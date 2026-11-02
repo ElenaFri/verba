@@ -74,11 +74,6 @@ make install   # install to $PREFIX (default /usr/local)
 make coverage  # local line-coverage report (lcov; coverage-html for HTML)
 ```
 
-Builds cleanly with `-Wall -Wextra -Werror` under gcc and musl-gcc. The test
-suite — C unit tests over the pure-logic modules, CLI checks, a fixture corpus,
-and a syscall-exercising helper run under the tracer — is valgrind-clean under CI
-at ≈ 99.9% line coverage.
-
 ## Status
 
 See [`TODO.md`](TODO.md) for the roadmap.
