@@ -6,17 +6,19 @@
 #include <string.h>
 #include <unistd.h>
 
+/* LCOV_EXCL_START — out-of-memory abort: not reachable under test. */
 static void oom(void)
 {
 	fputs("verba: out of memory\n", stderr);
 	abort();
 }
+/* LCOV_EXCL_STOP */
 
 void *xmalloc(size_t n)
 {
 	void *p = malloc(n ? n : 1);
 	if (!p)
-		oom();
+		oom(); /* LCOV_EXCL_LINE */
 	return p;
 }
 
@@ -24,7 +26,7 @@ void *xrealloc(void *p, size_t n)
 {
 	void *q = realloc(p, n ? n : 1);
 	if (!q)
-		oom();
+		oom(); /* LCOV_EXCL_LINE */
 	return q;
 }
 

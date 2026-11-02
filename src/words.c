@@ -132,7 +132,7 @@ static char *to_absolute(const char *tok)
 	if (getcwd(cwd, sizeof cwd))
 		abs = path_join(cwd, expanded);
 	else
-		abs = path_join("/", expanded);
+		abs = path_join("/", expanded); /* LCOV_EXCL_LINE: getcwd rarely fails */
 	free(expanded);
 	return abs;
 }

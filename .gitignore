@@ -56,6 +56,8 @@ dkms.conf
 
 # verba build output
 /verba
+/tests/unit
+/tests/syscall_zoo
 
 # coverage artifacts
 *.gcda

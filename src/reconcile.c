@@ -157,7 +157,9 @@ static const char *deed_sysname(const struct audit *au, const char *path)
 		    e->action != ACT_OPEN_WRITE)
 			return e->sysname;
 	}
-	return "write";
+	/* Unreachable in practice: every path in `modified` was put there by a
+	 * successful non-open syscall, which this loop will have found. */
+	return "write"; /* LCOV_EXCL_LINE */
 }
 
 /* ---- check 2: a file changed on disk but no output mentions it ---- */

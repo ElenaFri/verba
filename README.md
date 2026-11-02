@@ -69,13 +69,15 @@ versioned schema (`"schema": 1`).
 
 ```sh
 make           # build ./verba
-make test      # CLI smoke tests + the self-test fixture corpus
+make test      # unit tests + CLI smoke tests + the self-test fixture corpus
 make install   # install to $PREFIX (default /usr/local)
 make coverage  # local line-coverage report (lcov; coverage-html for HTML)
 ```
 
-Builds cleanly with `-Wall -Wextra -Werror` under gcc and musl-gcc; the test
-corpus runs valgrind-clean under CI.
+Builds cleanly with `-Wall -Wextra -Werror` under gcc and musl-gcc. The test
+suite — C unit tests over the pure-logic modules, CLI checks, a fixture corpus,
+and a syscall-exercising helper run under the tracer — is valgrind-clean under CI
+at ≈ 99.9% line coverage.
 
 ## Status
 

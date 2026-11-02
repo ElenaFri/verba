@@ -40,8 +40,8 @@ static inline unsigned long arch_syscall_arg(const verba_regs *r, int i)
 		return r->r8;
 	case 5:
 		return r->r9;
-	default:
-		return 0;
+	default: /* LCOV_EXCL_LINE: callers only ever pass i in 0..5 */
+		return 0; /* LCOV_EXCL_LINE */
 	}
 }
 

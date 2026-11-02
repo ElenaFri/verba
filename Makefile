@@ -21,6 +21,16 @@ BIN := verba
 SRC := $(wildcard src/*.c)
 OBJ := $(SRC:.c=.o)
 
+# The unit tests link the pure-logic objects (everything bar the ptrace tracer
+# and the CLI entry point, which carry ptrace/main() and are covered end-to-end).
+UNIT_OBJ := src/model.o src/reconcile.o src/report.o src/util.o src/vec.o \
+            src/words.o
+TESTBINS := tests/unit tests/syscall_zoo
+
+# The syscall zoo is never instrumented: it is coverage *input* (run under
+# verba), not a subject of measurement.
+ZOO_CFLAGS := $(CSTD) $(WARN) -O0 -g
+
 .PHONY: all test coverage coverage-html clean install uninstall
 
 all: $(BIN)
@@ -31,15 +41,22 @@ $(BIN): $(OBJ)
 src/%.o: src/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
-test: $(BIN)
-	sh tests/run.sh ./$(BIN)
+tests/unit: tests/unit.c $(UNIT_OBJ)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) -o $@ tests/unit.c $(UNIT_OBJ)
 
-# Rebuild instrumented, run the suite, summarise. Leaves coverage.info for
-# upload (Codecov) and the raw .gcda/.gcno behind; run `make clean` to reset.
+tests/syscall_zoo: tests/syscall_zoo.c
+	$(CC) $(CPPFLAGS) $(ZOO_CFLAGS) -o $@ $<
+
+test: $(BIN) $(TESTBINS)
+	./tests/unit
+	sh tests/run.sh ./$(BIN) tests/syscall_zoo
+
+# Rebuild instrumented, run the full suite (unit tests + CLI + fixtures + the
+# syscall zoo), summarise. Leaves coverage.info for upload (Codecov) and the raw
+# .gcda/.gcno behind; run `make clean` to reset.
 coverage:
 	$(MAKE) clean
-	$(MAKE) CFLAGS="$(COVFLAGS)" LDFLAGS="--coverage"
-	sh tests/run.sh ./$(BIN)
+	$(MAKE) CFLAGS="$(COVFLAGS)" LDFLAGS="--coverage" test
 	lcov --capture --directory src --output-file coverage.info
 	lcov --list coverage.info
 
@@ -58,6 +75,6 @@ uninstall:
 	rm -f $(DESTDIR)$(MANDIR)/verba.1
 
 clean:
-	rm -f $(BIN) $(OBJ)
-	rm -f src/*.gcda src/*.gcno coverage.info
+	rm -f $(BIN) $(OBJ) $(TESTBINS)
+	rm -f src/*.gcda src/*.gcno tests/*.gcda tests/*.gcno coverage.info
 	rm -rf coverage

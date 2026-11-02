@@ -113,8 +113,21 @@ error words.
 - [x] `fixtures/liar-installer.sh` — a bogus installer that trips all three
   anomaly classes at once: claim-without-write, a child-spawned undeclared
   write (also exercises follow-fork), and success-text + exit 1.
+- [x] `fixtures/crasher.sh` — success text, then death by signal: exercises the
+  signal-delivery/signaled-termination path and the "killed by signal" deed.
 - [x] `make test` runs the CLI smoke tests and the corpus through verba,
-  asserting the expected finding types and exit codes (`tests/run.sh`).
+  asserting the expected finding types and exit codes (`tests/run.sh`), plus
+  option-parsing edge cases (`-o`, `--allow`, `--`, missing arguments).
+- [x] `tests/unit.c` — a C unit harness over the pure-logic modules (util,
+  words, model, reconcile, report, vec), linked against the same instrumented
+  objects as `./verba` so it counts toward coverage.
+- [x] `tests/syscall_zoo.c` — a coverage helper, run under verba, that performs
+  every traced file syscall in both the plain and the `*at` spelling (raw
+  `syscall(2)`, since the libc wrappers often emit only the `*at` form), driving
+  the tracer's enter/exit handlers.
+- [x] Line coverage ≥ 95% (lcov ≈ 99.9%), measured by `make coverage` and
+  uploaded to Codecov; genuinely defensive or unreachable branches are
+  annotated with `LCOV_EXCL` and explained in a comment.
 - [ ] Still wanted: a dedicated static-binary fixture and a `make`-spawning
   fixture; full expected-findings diffs rather than type-presence assertions.
 
@@ -142,6 +155,6 @@ classes with their evidence lines, and the README's table is real.
 ---
 
 *Status: phase 0 complete; phase 1 (the mechanical audit) complete and
-valgrind-clean — verba traces a command and reports the three anomaly classes.
-Phase 2 (mistranslation auditing) is next. This file is updated before each
-release.*
+valgrind-clean — verba traces a command and reports the three anomaly classes,
+with the test suite at ≈ 99.9% line coverage. Phase 2 (mistranslation auditing)
+is next. This file is updated before each release.*

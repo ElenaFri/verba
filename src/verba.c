@@ -177,6 +177,7 @@ int main(int argc, char **argv)
 	struct audit au;
 	memset(&au, 0, sizeof au);
 
+	/* LCOV_EXCL_START: only on pipe/signalfd/fork failure inside trace_run. */
 	if (trace_run(cmd, &au) < 0) {
 		fprintf(stderr, "%s: could not start tracing: %s\n", progname,
 		        strerror(errno));
@@ -184,6 +185,7 @@ int main(int argc, char **argv)
 		free(opt.allow);
 		return EXIT_ERROR;
 	}
+	/* LCOV_EXCL_STOP */
 	if (au.exec_failed) {
 		fprintf(stderr, "%s: cannot run '%s': %s\n", progname, cmd[0],
 		        strerror(au.exec_errno));

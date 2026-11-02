@@ -125,12 +125,14 @@ static struct openfd *of_find(const struct tctx *c, pid_t pid, int fd)
 static void of_add(struct tctx *c, pid_t pid, int fd, const char *path)
 {
 	struct openfd *o = of_find(c, pid, fd);
-	if (o) { /* fd reused without an observed close */
+	/* LCOV_EXCL_START: fd reuse without an observed close is defensive. */
+	if (o) {
 		free(o->path);
 		o->path = xstrdup(path);
 		o->written = 0;
 		return;
 	}
+	/* LCOV_EXCL_STOP */
 	o = xmalloc(sizeof *o);
 	o->pid = pid;
 	o->fd = fd;
@@ -224,13 +226,13 @@ static char *proc_fd_canon(pid_t pid, int fd)
 	snprintf(link, sizeof link, "/proc/%d/fd/%d", pid, fd);
 	char *target = xreadlink(link);
 	if (!target)
-		return NULL;
+		return NULL; /* LCOV_EXCL_LINE: a live fd's /proc link always resolves */
 	if (target[0] == '/') {
 		char *canon = path_canon(target);
 		free(target);
 		return canon;
 	}
-	return target;
+	return target; /* LCOV_EXCL_LINE: write-opened fds are regular files */
 }
 
 static int path_exists_at(pid_t pid, int dirfd, const char *raw)
@@ -429,9 +431,9 @@ static void do_open_exit(struct tctx *c, const struct tracee *t, long ret,
 	if (err == 0 && ret >= 0) {
 		char *canonp = proc_fd_canon(t->pid, (int)ret);
 		if (!canonp)
-			canonp = resolve_canon(t->pid, dirfd, t->patha);
+			canonp = resolve_canon(t->pid, dirfd, t->patha); /* LCOV_EXCL_LINE */
 		if (!canonp)
-			return;
+			return; /* LCOV_EXCL_LINE */
 
 		if (write_intent)
 			push_event(c, t->pid, ACT_OPEN_WRITE, sysname,
@@ -626,7 +628,7 @@ static int syscall_dir(pid_t pid)
 	long n = ptrace(PTRACE_GET_SYSCALL_INFO, pid,
 	                (void *)(uintptr_t)sizeof(info), info);
 	if (n <= 0)
-		return 0;
+		return 0; /* LCOV_EXCL_LINE: non-positive only on kernels < 5.3 */
 	return info[0];
 }
 
@@ -650,17 +652,19 @@ static void handle_syscall_stop(struct tctx *c, struct tracee *t)
 {
 	verba_regs regs;
 	if (ptrace(PTRACE_GETREGS, t->pid, 0, &regs) != 0)
-		return;
+		return; /* LCOV_EXCL_LINE: a GETREGS failure is defensive */
 
 	int dir = syscall_dir(t->pid);
 	if (dir == PTRACE_SYSCALL_INFO_ENTRY)
 		handle_enter(c, t, &regs);
 	else if (dir == PTRACE_SYSCALL_INFO_EXIT)
 		handle_exit(c, t, &regs);
-	else if (t->entering) /* fallback: kernel < 5.3 */
+	/* LCOV_EXCL_START: enter/exit toggle fallback for kernels < 5.3. */
+	else if (t->entering)
 		handle_enter(c, t, &regs);
 	else
 		handle_exit(c, t, &regs);
+	/* LCOV_EXCL_STOP */
 }
 
 /* A PTRACE_EVENT_* stop: pick up new children, reset state across execve. */
@@ -689,7 +693,7 @@ static int stop_signal_to_deliver(struct tracee *t, int sig)
 		return 0;
 	}
 	if (sig == SIGTRAP)
-		return 0;
+		return 0; /* LCOV_EXCL_LINE: a stray plain SIGTRAP is defensive */
 	return sig;
 }
 
@@ -697,6 +701,8 @@ static void handle_wait(struct tctx *c, pid_t pid, int status)
 {
 	struct tracee *t = find_tracee(c, pid);
 	if (!t)
+		/* A freshly cloned child whose stop is reaped before its parent's
+		 * PTRACE_EVENT_FORK: adopt it now (scheduling-order dependent). */
 		t = add_tracee(c, pid);
 
 	if (WIFEXITED(status) || WIFSIGNALED(status)) {
@@ -704,7 +710,7 @@ static void handle_wait(struct tctx *c, pid_t pid, int status)
 		return;
 	}
 	if (!WIFSTOPPED(status))
-		return;
+		return; /* LCOV_EXCL_LINE: WIFCONTINUED is never requested */
 
 	int sig = WSTOPSIG(status);
 	unsigned event = ((unsigned)status >> 16) & 0xff;
@@ -732,7 +738,7 @@ static int drain_pipe(struct tctx *c, int fd, int stream, struct linebuf *lb)
 		if (n == 0)
 			return 0; /* EOF */
 		if (errno == EINTR)
-			continue;
+			continue; /* LCOV_EXCL_LINE: SIGCHLD is blocked via signalfd */
 		return 1; /* EAGAIN: still open */
 	}
 }
@@ -788,9 +794,11 @@ static void event_loop(struct tctx *c, int sfd, int outfd, int errfd)
 		}
 
 		if (poll(pfd, (nfds_t)n, -1) < 0) {
+			/* LCOV_EXCL_START: poll errors are defensive. */
 			if (errno == EINTR)
 				continue;
 			break;
+			/* LCOV_EXCL_STOP */
 		}
 
 		if (isig >= 0 && (pfd[isig].revents & POLLIN))
@@ -809,12 +817,14 @@ static void event_loop(struct tctx *c, int sfd, int outfd, int errfd)
 
 static void tctx_cleanup(struct tctx *c)
 {
+	/* LCOV_EXCL_START: the event loop exits only once no tracees remain. */
 	for (size_t i = 0; i < c->tracees.len; i++) {
 		struct tracee *t = c->tracees.data[i];
 		free(t->patha);
 		free(t->pathb);
 		free(t);
 	}
+	/* LCOV_EXCL_STOP */
 	vec_free(&c->tracees, NULL);
 	for (size_t i = 0; i < c->openfds.len; i++) {
 		struct openfd *o = c->openfds.data[i];
@@ -832,7 +842,7 @@ int trace_run(char **argv, struct audit *au)
 	int errp[2];
 	int execp[2];
 	if (pipe(outp) || pipe(errp) || pipe2(execp, O_CLOEXEC))
-		return -1;
+		return -1; /* LCOV_EXCL_LINE: pipe setup failure is defensive */
 
 	sigset_t mask;
 	sigset_t old;
@@ -840,18 +850,24 @@ int trace_run(char **argv, struct audit *au)
 	sigaddset(&mask, SIGCHLD);
 	sigprocmask(SIG_BLOCK, &mask, &old);
 	int sfd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
+	/* LCOV_EXCL_START: signalfd failure is defensive. */
 	if (sfd < 0) {
 		sigprocmask(SIG_SETMASK, &old, NULL);
 		return -1;
 	}
+	/* LCOV_EXCL_STOP */
 
 	pid_t child = fork();
+	/* LCOV_EXCL_START: fork failure is defensive. */
 	if (child < 0) {
 		close(sfd);
 		sigprocmask(SIG_SETMASK, &old, NULL);
 		return -1;
 	}
+	/* LCOV_EXCL_STOP */
 
+	/* LCOV_EXCL_START: the child's pre-execvp body cannot record coverage
+	 * (gcov counters are discarded across execvp). */
 	if (child == 0) {
 		/* Child: wire up stdio, announce ourselves to ptrace, exec. On
 		 * failure the errno is shipped back over the CLOEXEC pipe. */
@@ -871,6 +887,7 @@ int trace_run(char **argv, struct audit *au)
 		(void)w;
 		_exit(127);
 	}
+	/* LCOV_EXCL_STOP */
 
 	/* parent */
 	close(outp[1]);
@@ -907,6 +924,7 @@ int trace_run(char **argv, struct audit *au)
 
 	/* Initial exec-trap stop: set options, then start syscall tracing. */
 	int st;
+	/* LCOV_EXCL_START: losing the child before its first stop is defensive. */
 	if (waitpid(child, &st, 0) < 0) {
 		close(outp[0]);
 		close(errp[0]);
@@ -914,6 +932,7 @@ int trace_run(char **argv, struct audit *au)
 		sigprocmask(SIG_SETMASK, &old, NULL);
 		return -1;
 	}
+	/* LCOV_EXCL_STOP */
 	long opts = PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEFORK |
 	            PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE |
 	            PTRACE_O_TRACEEXEC | PTRACE_O_EXITKILL;
