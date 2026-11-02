@@ -70,3 +70,4 @@ coverage.info
 .verba-test.*
 .vg/
 .vg-test/
+out.txt
