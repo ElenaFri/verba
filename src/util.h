@@ -16,8 +16,8 @@ char *xreadlink(const char *path);
 /* Join dir + rel into a fresh absolute-ish path (handles a trailing slash). */
 char *path_join(const char *dir, const char *rel);
 
-/* Lexically normalise an absolute path: collapse "//", drop ".", resolve "..",
- * strip a trailing slash. Does not touch the filesystem. */
+/* Lexically normalise an absolute path: collapse duplicate slashes, drop ".",
+ * resolve "..", strip a trailing slash. Does not touch the filesystem. */
 char *path_lexical(const char *abs);
 
 /* Canonicalise: realpath(3) when the path exists (resolves symlinks), otherwise

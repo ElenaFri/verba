@@ -7,9 +7,10 @@
 #include <unistd.h>
 
 /*
- * Phase-1 pattern lists: minimal, explicit, English-only (see TODO.md §1.4 open
- * decision). Multi-word phrases are matched as plain substrings; single words
- * require alphabetic word boundaries so "ok" does not fire inside "broken".
+ * Phase-1 pattern lists: minimal, explicit, English-only (open design question,
+ * tracked in the project roadmap). Multi-word phrases are matched as plain
+ * substrings; single words require alphabetic word boundaries so "ok" does not
+ * fire inside "broken".
  */
 static const char *const write_verbs[] = {
 	"saved", "saving", "wrote", "writing", "written",
@@ -141,7 +142,7 @@ void words_extract_paths(const char *line, struct vec *out)
 	char *copy = xstrdup(line);
 	char *save = NULL;
 
-	for (char *tok = strtok_r(copy, " \t\r\n", &save); tok;
+	for (const char *tok = strtok_r(copy, " \t\r\n", &save); tok;
 	     tok = strtok_r(NULL, " \t\r\n", &save)) {
 		char *clean = trim_token(tok);
 		if (clean[0] == '\0' || !looks_like_path(clean)) {

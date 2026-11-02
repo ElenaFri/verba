@@ -1,5 +1,5 @@
 #!/bin/sh
-# verba test suite: CLI smoke tests plus the self-test fixture corpus (TODO 1.6).
+# verba test suite: CLI smoke tests plus the self-test fixture corpus.
 #
 # Usage: sh tests/run.sh [path-to-verba]
 # Run from the project root (the fixtures are referenced relative to cwd).
@@ -67,10 +67,11 @@ else
 fi
 
 check_type() {
-	if printf '%s' "$out" | grep -q "\"$1\""; then
-		pass "liar fixture reports $1"
+	type="$1"
+	if printf '%s' "$out" | grep -q "\"$type\""; then
+		pass "liar fixture reports $type"
 	else
-		bad "liar fixture missing $1"
+		bad "liar fixture missing $type"
 		printf '%s\n' "$out"
 	fi
 }

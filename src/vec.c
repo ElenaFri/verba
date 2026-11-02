@@ -19,5 +19,6 @@ void vec_free(struct vec *v, void (*free_item)(void *))
 			free_item(v->data[i]);
 	free(v->data);
 	v->data = NULL;
-	v->len = v->cap = 0;
+	v->len = 0;
+	v->cap = 0;
 }

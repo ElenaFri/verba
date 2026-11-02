@@ -68,15 +68,15 @@ struct tctx {
 	struct audit *au;
 	pid_t child;
 	unsigned long order;
-	struct vec tracees; /* struct tracee*  */
-	struct vec openfds; /* struct openfd*  */
+	struct vec tracees; /* each item: one tracee */
+	struct vec openfds; /* each item: one openfd */
 	struct linebuf lb_out;
 	struct linebuf lb_err;
 };
 
 /* ---- tracee map ---- */
 
-static struct tracee *find_tracee(struct tctx *c, pid_t pid)
+static struct tracee *find_tracee(const struct tctx *c, pid_t pid)
 {
 	for (size_t i = 0; i < c->tracees.len; i++) {
 		struct tracee *t = c->tracees.data[i];
@@ -112,7 +112,7 @@ static void remove_tracee(struct tctx *c, pid_t pid)
 
 /* ---- open-fd table (for write/ftruncate tracking) ---- */
 
-static struct openfd *of_find(struct tctx *c, pid_t pid, int fd)
+static struct openfd *of_find(const struct tctx *c, pid_t pid, int fd)
 {
 	for (size_t i = 0; i < c->openfds.len; i++) {
 		struct openfd *o = c->openfds.data[i];
@@ -159,7 +159,8 @@ static char *read_string(pid_t pid, unsigned long addr)
 	if (!addr)
 		return NULL;
 
-	size_t cap = 256, len = 0;
+	size_t cap = 256;
+	size_t len = 0;
 	char *buf = xmalloc(cap);
 
 	for (;;) {
@@ -167,7 +168,7 @@ static char *read_string(pid_t pid, unsigned long addr)
 		long word = ptrace(PTRACE_PEEKDATA, pid, (void *)(addr + len), 0);
 		if (word == -1 && errno)
 			break;
-		char *bytes = (char *)&word;
+		const char *bytes = (const char *)&word;
 		for (size_t i = 0; i < sizeof(long); i++) {
 			if (len + 1 >= cap) {
 				cap *= 2;
@@ -253,8 +254,7 @@ static int path_exists_at(pid_t pid, int dirfd, const char *raw)
 /* ---- event recording (takes ownership of path/path2) ---- */
 
 static void push_event(struct tctx *c, pid_t pid, enum file_action action,
-                       const char *sysname, char *path, char *path2, long ret,
-                       int err)
+                       const char *sysname, char *path, char *path2, long ret)
 {
 	if (!path) {
 		free(path2);
@@ -266,7 +266,7 @@ static void push_event(struct tctx *c, pid_t pid, enum file_action action,
 	e->path = path;
 	e->path2 = path2;
 	e->result = ret;
-	e->err = err;
+	e->err = (ret < 0 && ret >= -4095) ? (int)(-ret) : 0;
 	e->sysname = sysname;
 	vec_push(&c->au->events, e);
 }
@@ -317,7 +317,8 @@ static void lb_flush(struct tctx *c, struct linebuf *lb, int stream)
 
 /* ---- syscall handling ---- */
 
-static void handle_enter(struct tctx *c, struct tracee *t, const verba_regs *r)
+static void handle_enter(const struct tctx *c, struct tracee *t,
+                         const verba_regs *r)
 {
 	pid_t pid = t->pid;
 	(void)c;
@@ -327,7 +328,8 @@ static void handle_enter(struct tctx *c, struct tracee *t, const verba_regs *r)
 		t->args[i] = arch_syscall_arg(r, i);
 	free(t->patha);
 	free(t->pathb);
-	t->patha = t->pathb = NULL;
+	t->patha = NULL;
+	t->pathb = NULL;
 	t->existed = 0;
 
 	switch (t->nr) {
@@ -361,36 +363,6 @@ static void handle_enter(struct tctx *c, struct tracee *t, const verba_regs *r)
 		t->patha = read_string(pid, t->args[1]);
 		break;
 #endif
-#ifdef SYS_rename
-	case SYS_rename:
-		t->patha = read_string(pid, t->args[0]);
-		t->pathb = read_string(pid, t->args[1]);
-		break;
-#endif
-#ifdef SYS_renameat
-	case SYS_renameat:
-		t->patha = read_string(pid, t->args[1]);
-		t->pathb = read_string(pid, t->args[3]);
-		break;
-#endif
-#ifdef SYS_renameat2
-	case SYS_renameat2:
-		t->patha = read_string(pid, t->args[1]);
-		t->pathb = read_string(pid, t->args[3]);
-		break;
-#endif
-#ifdef SYS_link
-	case SYS_link:
-		t->patha = read_string(pid, t->args[0]);
-		t->pathb = read_string(pid, t->args[1]);
-		break;
-#endif
-#ifdef SYS_linkat
-	case SYS_linkat:
-		t->patha = read_string(pid, t->args[1]);
-		t->pathb = read_string(pid, t->args[3]);
-		break;
-#endif
 #ifdef SYS_symlink
 	case SYS_symlink:
 		t->patha = read_string(pid, t->args[1]); /* link path (created) */
@@ -411,13 +383,39 @@ static void handle_enter(struct tctx *c, struct tracee *t, const verba_regs *r)
 		t->patha = read_string(pid, t->args[1]);
 		break;
 #endif
+	/* Two-path syscalls, grouped by where their path arguments sit. */
+#if defined(SYS_rename) || defined(SYS_link)
+#ifdef SYS_rename
+	case SYS_rename:
+#endif
+#ifdef SYS_link
+	case SYS_link:
+#endif
+		t->patha = read_string(pid, t->args[0]);
+		t->pathb = read_string(pid, t->args[1]);
+		break;
+#endif
+#if defined(SYS_renameat) || defined(SYS_renameat2) || defined(SYS_linkat)
+#ifdef SYS_renameat
+	case SYS_renameat:
+#endif
+#ifdef SYS_renameat2
+	case SYS_renameat2:
+#endif
+#ifdef SYS_linkat
+	case SYS_linkat:
+#endif
+		t->patha = read_string(pid, t->args[1]);
+		t->pathb = read_string(pid, t->args[3]);
+		break;
+#endif
 	default:
 		break;
 	}
 }
 
-static void do_open_exit(struct tctx *c, struct tracee *t, long ret, int err,
-                         int flags, int dirfd, const char *sysname)
+static void do_open_exit(struct tctx *c, const struct tracee *t, long ret,
+                         int err, int flags, int dirfd, const char *sysname)
 {
 	int write_intent = ((flags & O_ACCMODE) != O_RDONLY);
 
@@ -430,19 +428,140 @@ static void do_open_exit(struct tctx *c, struct tracee *t, long ret, int err,
 
 		if (write_intent)
 			push_event(c, t->pid, ACT_OPEN_WRITE, sysname,
-			           xstrdup(canonp), NULL, ret, 0);
+			           xstrdup(canonp), NULL, ret);
 		if ((flags & O_CREAT) && !t->existed)
 			push_event(c, t->pid, ACT_CREATE, sysname,
-			           xstrdup(canonp), NULL, ret, 0);
+			           xstrdup(canonp), NULL, ret);
 		else if ((flags & O_TRUNC) && write_intent)
 			push_event(c, t->pid, ACT_TRUNCATE, sysname,
-			           xstrdup(canonp), NULL, ret, 0);
+			           xstrdup(canonp), NULL, ret);
 		if (write_intent)
 			of_add(c, t->pid, (int)ret, canonp);
 		free(canonp);
 	} else if (err && write_intent) {
 		push_event(c, t->pid, ACT_OPEN_WRITE, sysname,
-		           resolve_canon(t->pid, dirfd, t->patha), NULL, ret, err);
+		           resolve_canon(t->pid, dirfd, t->patha), NULL, ret);
+	}
+}
+
+/* write / ftruncate / close: fd-indexed, resolved through the open-fd table. */
+static void do_fd_exit(struct tctx *c, const struct tracee *t, pid_t pid,
+                       long ret, int err)
+{
+	switch (t->nr) {
+#ifdef SYS_write
+	case SYS_write:
+		if (err == 0 && ret > 0) {
+			struct openfd *o = of_find(c, pid, (int)t->args[0]);
+			if (o && !o->written) {
+				push_event(c, pid, ACT_WRITE, "write",
+				           xstrdup(o->path), NULL, ret);
+				o->written = 1;
+			}
+		}
+		break;
+#endif
+#ifdef SYS_ftruncate
+	case SYS_ftruncate:
+		if (err == 0) {
+			const struct openfd *o = of_find(c, pid, (int)t->args[0]);
+			if (o)
+				push_event(c, pid, ACT_TRUNCATE, "ftruncate",
+				           xstrdup(o->path), NULL, ret);
+		}
+		break;
+#endif
+#ifdef SYS_close
+	case SYS_close:
+		if (err == 0)
+			of_remove(c, pid, (int)t->args[0]);
+		break;
+#endif
+	default:
+		break;
+	}
+}
+
+/* unlink / mkdir / rename / link / symlink (and *at forms): resolve the saved
+ * enter-time path(s) and record the deed. None of these report on failure. */
+static void do_path_create_exit(struct tctx *c, const struct tracee *t,
+                                pid_t pid, long ret, int err)
+{
+	if (err != 0)
+		return;
+
+	switch (t->nr) {
+#ifdef SYS_unlink
+	case SYS_unlink:
+		push_event(c, pid, ACT_UNLINK, "unlink",
+		           resolve_canon(pid, AT_FDCWD, t->patha), NULL, ret);
+		break;
+#endif
+#ifdef SYS_unlinkat
+	case SYS_unlinkat:
+		push_event(c, pid, ACT_UNLINK, "unlinkat",
+		           resolve_canon(pid, (int)t->args[0], t->patha), NULL, ret);
+		break;
+#endif
+#ifdef SYS_mkdir
+	case SYS_mkdir:
+		push_event(c, pid, ACT_CREATE, "mkdir",
+		           resolve_canon(pid, AT_FDCWD, t->patha), NULL, ret);
+		break;
+#endif
+#ifdef SYS_mkdirat
+	case SYS_mkdirat:
+		push_event(c, pid, ACT_CREATE, "mkdirat",
+		           resolve_canon(pid, (int)t->args[0], t->patha), NULL, ret);
+		break;
+#endif
+#ifdef SYS_rename
+	case SYS_rename:
+		push_event(c, pid, ACT_RENAME, "rename",
+		           resolve_canon(pid, AT_FDCWD, t->pathb),
+		           resolve_canon(pid, AT_FDCWD, t->patha), ret);
+		break;
+#endif
+#ifdef SYS_renameat
+	case SYS_renameat:
+		push_event(c, pid, ACT_RENAME, "renameat",
+		           resolve_canon(pid, (int)t->args[2], t->pathb),
+		           resolve_canon(pid, (int)t->args[0], t->patha), ret);
+		break;
+#endif
+#ifdef SYS_renameat2
+	case SYS_renameat2:
+		push_event(c, pid, ACT_RENAME, "renameat2",
+		           resolve_canon(pid, (int)t->args[2], t->pathb),
+		           resolve_canon(pid, (int)t->args[0], t->patha), ret);
+		break;
+#endif
+#ifdef SYS_link
+	case SYS_link:
+		push_event(c, pid, ACT_CREATE, "link",
+		           resolve_canon(pid, AT_FDCWD, t->pathb), NULL, ret);
+		break;
+#endif
+#ifdef SYS_linkat
+	case SYS_linkat:
+		push_event(c, pid, ACT_CREATE, "linkat",
+		           resolve_canon(pid, (int)t->args[2], t->pathb), NULL, ret);
+		break;
+#endif
+#ifdef SYS_symlink
+	case SYS_symlink:
+		push_event(c, pid, ACT_CREATE, "symlink",
+		           resolve_canon(pid, AT_FDCWD, t->patha), NULL, ret);
+		break;
+#endif
+#ifdef SYS_symlinkat
+	case SYS_symlinkat:
+		push_event(c, pid, ACT_CREATE, "symlinkat",
+		           resolve_canon(pid, (int)t->args[1], t->patha), NULL, ret);
+		break;
+#endif
+	default:
+		break;
 	}
 }
 
@@ -471,131 +590,16 @@ static void handle_exit(struct tctx *c, struct tracee *t, const verba_regs *r)
 		             AT_FDCWD, "creat");
 		break;
 #endif
-#ifdef SYS_write
-	case SYS_write:
-		if (err == 0 && ret > 0) {
-			struct openfd *o = of_find(c, pid, (int)t->args[0]);
-			if (o && !o->written) {
-				push_event(c, pid, ACT_WRITE, "write",
-				           xstrdup(o->path), NULL, ret, 0);
-				o->written = 1;
-			}
-		}
-		break;
-#endif
-#ifdef SYS_ftruncate
-	case SYS_ftruncate:
-		if (err == 0) {
-			struct openfd *o = of_find(c, pid, (int)t->args[0]);
-			if (o)
-				push_event(c, pid, ACT_TRUNCATE, "ftruncate",
-				           xstrdup(o->path), NULL, ret, 0);
-		}
-		break;
-#endif
-#ifdef SYS_close
-	case SYS_close:
-		if (err == 0)
-			of_remove(c, pid, (int)t->args[0]);
-		break;
-#endif
-#ifdef SYS_unlink
-	case SYS_unlink:
-		if (err == 0)
-			push_event(c, pid, ACT_UNLINK, "unlink",
-			           resolve_canon(pid, AT_FDCWD, t->patha), NULL,
-			           ret, 0);
-		break;
-#endif
-#ifdef SYS_unlinkat
-	case SYS_unlinkat:
-		if (err == 0)
-			push_event(c, pid, ACT_UNLINK, "unlinkat",
-			           resolve_canon(pid, (int)t->args[0], t->patha),
-			           NULL, ret, 0);
-		break;
-#endif
-#ifdef SYS_mkdir
-	case SYS_mkdir:
-		if (err == 0)
-			push_event(c, pid, ACT_CREATE, "mkdir",
-			           resolve_canon(pid, AT_FDCWD, t->patha), NULL,
-			           ret, 0);
-		break;
-#endif
-#ifdef SYS_mkdirat
-	case SYS_mkdirat:
-		if (err == 0)
-			push_event(c, pid, ACT_CREATE, "mkdirat",
-			           resolve_canon(pid, (int)t->args[0], t->patha),
-			           NULL, ret, 0);
-		break;
-#endif
-#ifdef SYS_rename
-	case SYS_rename:
-		if (err == 0)
-			push_event(c, pid, ACT_RENAME, "rename",
-			           resolve_canon(pid, AT_FDCWD, t->pathb),
-			           resolve_canon(pid, AT_FDCWD, t->patha), ret, 0);
-		break;
-#endif
-#ifdef SYS_renameat
-	case SYS_renameat:
-		if (err == 0)
-			push_event(c, pid, ACT_RENAME, "renameat",
-			           resolve_canon(pid, (int)t->args[2], t->pathb),
-			           resolve_canon(pid, (int)t->args[0], t->patha),
-			           ret, 0);
-		break;
-#endif
-#ifdef SYS_renameat2
-	case SYS_renameat2:
-		if (err == 0)
-			push_event(c, pid, ACT_RENAME, "renameat2",
-			           resolve_canon(pid, (int)t->args[2], t->pathb),
-			           resolve_canon(pid, (int)t->args[0], t->patha),
-			           ret, 0);
-		break;
-#endif
-#ifdef SYS_link
-	case SYS_link:
-		if (err == 0)
-			push_event(c, pid, ACT_CREATE, "link",
-			           resolve_canon(pid, AT_FDCWD, t->pathb), NULL,
-			           ret, 0);
-		break;
-#endif
-#ifdef SYS_linkat
-	case SYS_linkat:
-		if (err == 0)
-			push_event(c, pid, ACT_CREATE, "linkat",
-			           resolve_canon(pid, (int)t->args[2], t->pathb),
-			           NULL, ret, 0);
-		break;
-#endif
-#ifdef SYS_symlink
-	case SYS_symlink:
-		if (err == 0)
-			push_event(c, pid, ACT_CREATE, "symlink",
-			           resolve_canon(pid, AT_FDCWD, t->patha), NULL,
-			           ret, 0);
-		break;
-#endif
-#ifdef SYS_symlinkat
-	case SYS_symlinkat:
-		if (err == 0)
-			push_event(c, pid, ACT_CREATE, "symlinkat",
-			           resolve_canon(pid, (int)t->args[1], t->patha),
-			           NULL, ret, 0);
-		break;
-#endif
 	default:
+		do_fd_exit(c, t, pid, ret, err);
+		do_path_create_exit(c, t, pid, ret, err);
 		break;
 	}
 
 	free(t->patha);
 	free(t->pathb);
-	t->patha = t->pathb = NULL;
+	t->patha = NULL;
+	t->pathb = NULL;
 }
 
 /* ---- the ptrace loop ---- */
@@ -619,29 +623,79 @@ static int syscall_dir(pid_t pid)
 	return info[0];
 }
 
+/* The child (or the whole group leader) is gone: record how, then forget it. */
+static void handle_termination(struct tctx *c, pid_t pid, int status)
+{
+	if (pid == c->child) {
+		if (WIFEXITED(status)) {
+			c->au->exited = 1;
+			c->au->exit_code = WEXITSTATUS(status);
+		} else {
+			c->au->signaled = 1;
+			c->au->term_signal = WTERMSIG(status);
+		}
+	}
+	remove_tracee(c, pid);
+}
+
+/* A syscall-stop: dispatch to enter/exit using the kernel's direction hint. */
+static void handle_syscall_stop(struct tctx *c, struct tracee *t)
+{
+	verba_regs regs;
+	if (ptrace(PTRACE_GETREGS, t->pid, 0, &regs) != 0)
+		return;
+
+	int dir = syscall_dir(t->pid);
+	if (dir == PTRACE_SYSCALL_INFO_ENTRY)
+		handle_enter(c, t, &regs);
+	else if (dir == PTRACE_SYSCALL_INFO_EXIT)
+		handle_exit(c, t, &regs);
+	else if (t->entering) /* fallback: kernel < 5.3 */
+		handle_enter(c, t, &regs);
+	else
+		handle_exit(c, t, &regs);
+}
+
+/* A PTRACE_EVENT_* stop: pick up new children, reset state across execve. */
+static void handle_ptrace_event(struct tctx *c, struct tracee *t, unsigned event)
+{
+	if (event == PTRACE_EVENT_FORK || event == PTRACE_EVENT_VFORK ||
+	    event == PTRACE_EVENT_CLONE) {
+		unsigned long newpid = 0;
+		ptrace(PTRACE_GETEVENTMSG, t->pid, 0, &newpid);
+		if (newpid && !find_tracee(c, (pid_t)newpid))
+			add_tracee(c, (pid_t)newpid);
+	} else if (event == PTRACE_EVENT_EXEC) {
+		t->entering = 1;
+		free(t->patha);
+		free(t->pathb);
+		t->patha = NULL;
+		t->pathb = NULL;
+	}
+}
+
+/* Which signal to re-inject on a plain signal-delivery stop (0 = swallow). */
+static int stop_signal_to_deliver(struct tracee *t, int sig)
+{
+	if (sig == SIGSTOP && !t->booted) {
+		t->booted = 1;
+		return 0;
+	}
+	if (sig == SIGTRAP)
+		return 0;
+	return sig;
+}
+
 static void handle_wait(struct tctx *c, pid_t pid, int status)
 {
 	struct tracee *t = find_tracee(c, pid);
-	int is_new = 0;
-	if (!t) {
+	if (!t)
 		t = add_tracee(c, pid);
-		is_new = 1;
-	}
 
 	if (WIFEXITED(status) || WIFSIGNALED(status)) {
-		if (pid == c->child) {
-			if (WIFEXITED(status)) {
-				c->au->exited = 1;
-				c->au->exit_code = WEXITSTATUS(status);
-			} else {
-				c->au->signaled = 1;
-				c->au->term_signal = WTERMSIG(status);
-			}
-		}
-		remove_tracee(c, pid);
+		handle_termination(c, pid, status);
 		return;
 	}
-
 	if (!WIFSTOPPED(status))
 		return;
 
@@ -649,43 +703,13 @@ static void handle_wait(struct tctx *c, pid_t pid, int status)
 	unsigned event = ((unsigned)status >> 16) & 0xff;
 
 	if (sig == (SIGTRAP | 0x80)) {
-		verba_regs regs;
-		if (ptrace(PTRACE_GETREGS, pid, 0, &regs) == 0) {
-			int dir = syscall_dir(pid);
-			if (dir == PTRACE_SYSCALL_INFO_ENTRY)
-				handle_enter(c, t, &regs);
-			else if (dir == PTRACE_SYSCALL_INFO_EXIT)
-				handle_exit(c, t, &regs);
-			else if (t->entering) /* fallback: kernel < 5.3 */
-				handle_enter(c, t, &regs);
-			else
-				handle_exit(c, t, &regs);
-		}
+		handle_syscall_stop(c, t);
 		resume(pid, 0);
 	} else if (sig == SIGTRAP && event != 0) {
-		if (event == PTRACE_EVENT_FORK || event == PTRACE_EVENT_VFORK ||
-		    event == PTRACE_EVENT_CLONE) {
-			unsigned long newpid = 0;
-			ptrace(PTRACE_GETEVENTMSG, pid, 0, &newpid);
-			if (newpid && !find_tracee(c, (pid_t)newpid))
-				add_tracee(c, (pid_t)newpid);
-		} else if (event == PTRACE_EVENT_EXEC) {
-			t->entering = 1;
-			free(t->patha);
-			free(t->pathb);
-			t->patha = t->pathb = NULL;
-		}
+		handle_ptrace_event(c, t, event);
 		resume(pid, 0);
 	} else {
-		int deliver = sig;
-		if (sig == SIGSTOP && !t->booted) {
-			t->booted = 1;
-			deliver = 0;
-		} else if (sig == SIGTRAP) {
-			deliver = 0;
-		}
-		(void)is_new;
-		resume(pid, deliver);
+		resume(pid, stop_signal_to_deliver(t, sig));
 	}
 }
 
@@ -713,13 +737,98 @@ static void set_nonblock(int fd)
 		fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
+/* Drain the signalfd, then reap every ready tracee stop via waitpid. */
+static void reap_children(struct tctx *c, int sfd)
+{
+	struct signalfd_siginfo si;
+	while (read(sfd, &si, sizeof si) > 0)
+		;
+	pid_t w;
+	int ws;
+	while ((w = waitpid(-1, &ws, WNOHANG | __WALL)) > 0)
+		handle_wait(c, w, ws);
+}
+
+/* Pump tracee stops and child output until both run dry. */
+static void event_loop(struct tctx *c, int sfd, int outfd, int errfd)
+{
+	set_nonblock(outfd);
+	set_nonblock(errfd);
+	int out_open = 1;
+	int err_open = 1;
+
+	while (c->tracees.len > 0 || out_open || err_open) {
+		struct pollfd pfd[3];
+		int n = 0;
+		int isig = -1;
+		int iout = -1;
+		int ierr = -1;
+
+		if (c->tracees.len > 0) {
+			pfd[n].fd = sfd;
+			pfd[n].events = POLLIN;
+			isig = n++;
+		}
+		if (out_open) {
+			pfd[n].fd = outfd;
+			pfd[n].events = POLLIN;
+			iout = n++;
+		}
+		if (err_open) {
+			pfd[n].fd = errfd;
+			pfd[n].events = POLLIN;
+			ierr = n++;
+		}
+
+		if (poll(pfd, (nfds_t)n, -1) < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+
+		if (isig >= 0 && (pfd[isig].revents & POLLIN))
+			reap_children(c, sfd);
+		if (iout >= 0 && (pfd[iout].revents & (POLLIN | POLLHUP)) &&
+		    !drain_pipe(c, outfd, 1, &c->lb_out))
+			out_open = 0;
+		if (ierr >= 0 && (pfd[ierr].revents & (POLLIN | POLLHUP)) &&
+		    !drain_pipe(c, errfd, 2, &c->lb_err))
+			err_open = 0;
+	}
+
+	lb_flush(c, &c->lb_out, 1);
+	lb_flush(c, &c->lb_err, 2);
+}
+
+static void tctx_cleanup(struct tctx *c)
+{
+	for (size_t i = 0; i < c->tracees.len; i++) {
+		struct tracee *t = c->tracees.data[i];
+		free(t->patha);
+		free(t->pathb);
+		free(t);
+	}
+	vec_free(&c->tracees, NULL);
+	for (size_t i = 0; i < c->openfds.len; i++) {
+		struct openfd *o = c->openfds.data[i];
+		free(o->path);
+		free(o);
+	}
+	vec_free(&c->openfds, NULL);
+	free(c->lb_out.buf);
+	free(c->lb_err.buf);
+}
+
 int trace_run(char **argv, struct audit *au)
 {
-	int outp[2], errp[2], execp[2];
+	int outp[2];
+	int errp[2];
+	int execp[2];
 	if (pipe(outp) || pipe(errp) || pipe2(execp, O_CLOEXEC))
 		return -1;
 
-	sigset_t mask, old;
+	sigset_t mask;
+	sigset_t old;
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGCHLD);
 	sigprocmask(SIG_BLOCK, &mask, &old);
@@ -737,6 +846,8 @@ int trace_run(char **argv, struct audit *au)
 	}
 
 	if (child == 0) {
+		/* Child: wire up stdio, announce ourselves to ptrace, exec. On
+		 * failure the errno is shipped back over the CLOEXEC pipe. */
 		sigprocmask(SIG_SETMASK, &old, NULL);
 		dup2(outp[1], STDOUT_FILENO);
 		dup2(errp[1], STDERR_FILENO);
@@ -804,79 +915,11 @@ int trace_run(char **argv, struct audit *au)
 	ct->booted = 1;
 	resume(child, 0);
 
-	int outfd = outp[0], errfd = errp[0];
-	set_nonblock(outfd);
-	set_nonblock(errfd);
-	int out_open = 1, err_open = 1;
+	event_loop(&c, sfd, outp[0], errp[0]);
+	tctx_cleanup(&c);
 
-	while (c.tracees.len > 0 || out_open || err_open) {
-		struct pollfd pfd[3];
-		int n = 0, isig = -1, iout = -1, ierr = -1;
-
-		if (c.tracees.len > 0) {
-			pfd[n].fd = sfd;
-			pfd[n].events = POLLIN;
-			isig = n++;
-		}
-		if (out_open) {
-			pfd[n].fd = outfd;
-			pfd[n].events = POLLIN;
-			iout = n++;
-		}
-		if (err_open) {
-			pfd[n].fd = errfd;
-			pfd[n].events = POLLIN;
-			ierr = n++;
-		}
-		if (n == 0)
-			break;
-
-		if (poll(pfd, (nfds_t)n, -1) < 0) {
-			if (errno == EINTR)
-				continue;
-			break;
-		}
-
-		if (isig >= 0 && (pfd[isig].revents & POLLIN)) {
-			struct signalfd_siginfo si;
-			while (read(sfd, &si, sizeof si) > 0)
-				;
-			pid_t w;
-			int ws;
-			while ((w = waitpid(-1, &ws, WNOHANG | __WALL)) > 0)
-				handle_wait(&c, w, ws);
-		}
-		if (iout >= 0 && (pfd[iout].revents & (POLLIN | POLLHUP))) {
-			if (!drain_pipe(&c, outfd, 1, &c.lb_out))
-				out_open = 0;
-		}
-		if (ierr >= 0 && (pfd[ierr].revents & (POLLIN | POLLHUP))) {
-			if (!drain_pipe(&c, errfd, 2, &c.lb_err))
-				err_open = 0;
-		}
-	}
-
-	lb_flush(&c, &c.lb_out, 1);
-	lb_flush(&c, &c.lb_err, 2);
-
-	/* cleanup */
-	for (size_t i = 0; i < c.tracees.len; i++) {
-		struct tracee *t = c.tracees.data[i];
-		free(t->patha);
-		free(t->pathb);
-		free(t);
-	}
-	vec_free(&c.tracees, NULL);
-	for (size_t i = 0; i < c.openfds.len; i++) {
-		struct openfd *o = c.openfds.data[i];
-		free(o->path);
-		free(o);
-	}
-	vec_free(&c.openfds, NULL);
-	free(c.lb_out.buf);
-	free(c.lb_err.buf);
-	close(outfd);
-	close(errfd);
+	close(outp[0]);
+	close(errp[0]);
 	close(sfd);
 	sigprocmask(SIG_SETMASK, &old, NULL);
 	return 0;

@@ -80,48 +80,48 @@ char *path_join(const char *dir, const char *rel)
 
 char *path_lexical(const char *abs)
 {
-	/* Split on '/', keep a stack of components, apply "." and "..". */
+	/* Single pass, always rooted at '/'. Components are appended straight into
+	 * `out`; ".." is applied by scanning back to the previous '/'. Every write
+	 * is explicitly bounded by `cap`, which fits the worst case (a leading '/'
+	 * plus the input plus a terminator). */
 	size_t len = strlen(abs);
-	char *work = xstrndup(abs, len);
-
-	/* A path of length len has at most len non-empty components. */
-	size_t maxcomp = len + 1;
-	char **comp = xmalloc(maxcomp * sizeof(*comp));
-	size_t ncomp = 0;
-
-	char *save = NULL;
-	for (char *tok = strtok_r(work, "/", &save); tok;
-	     tok = strtok_r(NULL, "/", &save)) {
-		if (strcmp(tok, ".") == 0 || tok[0] == '\0')
-			continue;
-		if (strcmp(tok, "..") == 0) {
-			if (ncomp > 0)
-				ncomp--;
-			continue;
-		}
-		if (ncomp < maxcomp)
-			comp[ncomp++] = tok;
-	}
-
-	/* Rebuild, always rooted at '/'. */
 	size_t cap = len + 2;
 	char *out = xmalloc(cap);
-	out[0] = '\0';
-	if (ncomp == 0) {
-		strcpy(out, "/");
-	} else {
-		size_t pos = 0;
-		for (size_t i = 0; i < ncomp; i++) {
-			out[pos++] = '/';
-			size_t cl = strlen(comp[i]);
-			memcpy(out + pos, comp[i], cl);
-			pos += cl;
+	size_t pos = 0;
+
+	const char *p = abs;
+	while (*p) {
+		while (*p == '/')
+			p++;
+		if (*p == '\0')
+			break;
+
+		const char *start = p;
+		while (*p != '\0' && *p != '/')
+			p++;
+		size_t seg = (size_t)(p - start);
+
+		if (seg == 1 && start[0] == '.')
+			continue;
+		if (seg == 2 && start[0] == '.' && start[1] == '.') {
+			while (pos > 0 && out[pos - 1] != '/')
+				pos--;
+			if (pos > 0)
+				pos--; /* drop the separating '/' */
+			continue;
 		}
-		out[pos] = '\0';
+
+		if (pos < cap - 1)
+			out[pos++] = '/';
+		for (size_t i = 0; i < seg && pos < cap - 1; i++)
+			out[pos++] = start[i];
 	}
 
-	free(comp);
-	free(work);
+	if (pos == 0) {
+		out[0] = '/';
+		pos = 1;
+	}
+	out[pos] = '\0';
 	return out;
 }
 

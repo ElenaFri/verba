@@ -32,7 +32,10 @@ static void free_str(void *p)
  * never treated as undeclared. */
 static int under_tmpdir(const char *path)
 {
-	const char *tmp = getenv("TMPDIR");
+	/* Not creating a temp file here: this only classifies an already-observed
+	 * absolute path against the temp-dir prefix, so the usual symlink/race
+	 * concerns around publicly writable directories do not apply. */
+	const char *tmp = getenv("TMPDIR"); // NOSONAR: prefix match only, no file I/O
 	if (!tmp || tmp[0] != '/')
 		tmp = P_tmpdir;
 
@@ -82,42 +85,45 @@ static void add_finding(struct vec *findings, enum finding_type type,
 	vec_push(findings, f);
 }
 
-void reconcile(const struct audit *au, struct vec *findings,
-               char *const *allow, int nallow)
+/* ---- deeds: which files were opened for writing vs. actually changed ---- */
+static void gather_deeds(const struct audit *au, struct vec *opened_write,
+                         struct vec *modified)
 {
-	struct vec opened_write = {0}; /* files opened for writing (success) */
-	struct vec modified = {0};     /* files created/modified/removed */
-	struct vec mentioned = {0};    /* every path named in the output */
-
-	/* ---- deeds ---- */
 	for (size_t i = 0; i < au->events.len; i++) {
 		const struct file_event *e = au->events.data[i];
 		if (e->err != 0 || !e->path)
 			continue;
 		switch (e->action) {
 		case ACT_OPEN_WRITE:
-			set_add(&opened_write, e->path);
+			set_add(opened_write, e->path);
 			break;
 		case ACT_CREATE:
 		case ACT_TRUNCATE:
 		case ACT_WRITE:
-			set_add(&opened_write, e->path);
-			set_add(&modified, e->path);
+			set_add(opened_write, e->path);
+			set_add(modified, e->path);
 			break;
 		case ACT_UNLINK:
 		case ACT_RENAME:
-			set_add(&modified, e->path);
+			set_add(modified, e->path);
 			break;
 		}
 	}
+}
 
-	/* ---- words ---- */
+/* ---- words: every path named anywhere in the output ---- */
+static void collect_mentioned(const struct audit *au, struct vec *mentioned)
+{
 	for (size_t i = 0; i < au->lines.len; i++) {
 		const struct out_line *l = au->lines.data[i];
-		words_extract_paths(l->text, &mentioned);
+		words_extract_paths(l->text, mentioned);
 	}
+}
 
-	/* ---- check 1: faithless claim ---- */
+/* ---- check 1: output claims a write that never reached the kernel ---- */
+static void check_faithless(const struct audit *au, struct vec *findings,
+                            const struct vec *opened_write)
+{
 	struct vec reported = {0};
 	for (size_t i = 0; i < au->lines.len; i++) {
 		const struct out_line *l = au->lines.data[i];
@@ -128,7 +134,7 @@ void reconcile(const struct audit *au, struct vec *findings,
 		words_extract_paths(l->text, &paths);
 		for (size_t j = 0; j < paths.len; j++) {
 			const char *p = paths.data[j];
-			if (set_has(&opened_write, p) || set_has(&reported, p))
+			if (set_has(opened_write, p) || set_has(&reported, p))
 				continue;
 			char deed[256];
 			snprintf(deed, sizeof deed,
@@ -139,37 +145,52 @@ void reconcile(const struct audit *au, struct vec *findings,
 		}
 		vec_free(&paths, free_str);
 	}
+	vec_free(&reported, free_str);
+}
 
-	/* ---- check 2: undeclared write ---- */
+/* The syscall that last touched a modified path, for the report line. */
+static const char *deed_sysname(const struct audit *au, const char *path)
+{
+	for (size_t j = 0; j < au->events.len; j++) {
+		const struct file_event *e = au->events.data[j];
+		if (e->err == 0 && e->path && strcmp(e->path, path) == 0 &&
+		    e->action != ACT_OPEN_WRITE)
+			return e->sysname;
+	}
+	return "write";
+}
+
+/* ---- check 2: a file changed on disk but no output mentions it ---- */
+static void check_undeclared(const struct audit *au, struct vec *findings,
+                             const struct vec *modified,
+                             const struct vec *mentioned, char *const *allow,
+                             int nallow)
+{
 	struct vec ureported = {0};
-	for (size_t i = 0; i < modified.len; i++) {
-		const char *m = modified.data[i];
-		if (set_has(&mentioned, m) || set_has(&ureported, m))
+	for (size_t i = 0; i < modified->len; i++) {
+		const char *m = modified->data[i];
+		if (set_has(mentioned, m) || set_has(&ureported, m))
 			continue;
 		if (whitelisted(m, allow, nallow))
 			continue;
 
-		const char *sysname = "write";
-		for (size_t j = 0; j < au->events.len; j++) {
-			const struct file_event *e = au->events.data[j];
-			if (e->err == 0 && e->path && strcmp(e->path, m) == 0 &&
-			    e->action != ACT_OPEN_WRITE) {
-				sysname = e->sysname;
-				break;
-			}
-		}
 		char deed[256];
-		snprintf(deed, sizeof deed, "%s %s", sysname, m);
+		snprintf(deed, sizeof deed, "%s %s", deed_sysname(au, m), m);
 		add_finding(findings, F_UNDECLARED_WRITE, m, NULL, deed,
 		            "a file was created or modified but no output mentions it");
 		set_add(&ureported, m);
 	}
+	vec_free(&ureported, free_str);
+}
 
-	/* ---- check 3: discourse mismatch ---- */
+/* ---- check 3: success/error text disagrees with the exit status ---- */
+static void check_discourse(const struct audit *au, struct vec *findings)
+{
 	int failed = (au->signaled || (au->exited && au->exit_code != 0));
 	int succeeded = (au->exited && au->exit_code == 0 && !au->signaled);
 
-	const struct out_line *success_line = NULL, *error_line = NULL;
+	const struct out_line *success_line = NULL;
+	const struct out_line *error_line = NULL;
 	for (size_t i = 0; i < au->lines.len; i++) {
 		const struct out_line *l = au->lines.data[i];
 		if (!success_line && words_is_success(l->text))
@@ -195,10 +216,23 @@ void reconcile(const struct audit *au, struct vec *findings,
 		            "exited with status 0",
 		            "output reports an error but the command succeeded");
 	}
+}
+
+void reconcile(const struct audit *au, struct vec *findings,
+               char *const *allow, int nallow)
+{
+	struct vec opened_write = {0}; /* files opened for writing (success) */
+	struct vec modified = {0};     /* files created/modified/removed */
+	struct vec mentioned = {0};    /* every path named in the output */
+
+	gather_deeds(au, &opened_write, &modified);
+	collect_mentioned(au, &mentioned);
+
+	check_faithless(au, findings, &opened_write);
+	check_undeclared(au, findings, &modified, &mentioned, allow, nallow);
+	check_discourse(au, findings);
 
 	vec_free(&opened_write, free_str);
 	vec_free(&modified, free_str);
 	vec_free(&mentioned, free_str);
-	vec_free(&reported, free_str);
-	vec_free(&ureported, free_str);
 }

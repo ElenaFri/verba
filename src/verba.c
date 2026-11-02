@@ -21,7 +21,7 @@
 #define VERBA_VERSION "0.0.0-dev"
 #endif
 
-/* Stable, CI-facing exit-code contract (see README and TODO.md section 1.5). */
+/* Stable, CI-facing exit-code contract (see README and the project roadmap). */
 enum {
 	EXIT_FAITHFUL = 0, /* ran, no contradictions                 */
 	EXIT_FINDINGS = 1, /* ran, contradictions found              */
@@ -68,111 +68,147 @@ static void hint_help(void)
 	fprintf(stderr, "Try '%s --help' for more information.\n", progname);
 }
 
-int main(int argc, char **argv)
-{
-	int json = 0;
-	const char *output = NULL;
-	char **allow = NULL;
-	int nallow = 0;
-	int i;
+struct options {
+	int json;
+	const char *output;
+	char **allow;
+	int nallow;
+	int cmd_index; /* index of <command> in argv, or argc if none */
+};
 
-	for (i = 1; i < argc; i++) {
+enum parse_result {
+	PARSE_RUN,   /* options consumed; run argv[cmd_index...] */
+	PARSE_DONE,  /* --help/--version handled; exit successfully */
+	PARSE_ERROR, /* usage error already reported */
+};
+
+/* The argument of an option that takes one, or NULL (after a diagnostic). */
+static char *option_arg(int argc, char **argv, int i, const char *what)
+{
+	if (i + 1 >= argc) {
+		fprintf(stderr, "%s: %s requires %s\n", progname, argv[i], what);
+		hint_help();
+		return NULL;
+	}
+	return argv[i + 1];
+}
+
+/* True if arg matches either the short or the long spelling of an option. */
+static int opt_is(const char *arg, const char *short_opt, const char *long_opt)
+{
+	return strcmp(arg, short_opt) == 0 || strcmp(arg, long_opt) == 0;
+}
+
+static enum parse_result parse_args(int argc, char **argv, struct options *opt)
+{
+	int i = 1;
+	while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
 		const char *arg = argv[i];
 
 		if (strcmp(arg, "--") == 0) {
 			i++;
 			break;
 		}
-		if (arg[0] != '-' || arg[1] == '\0')
-			break;
-
-		if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+		if (opt_is(arg, "-h", "--help")) {
 			print_usage(stdout);
-			free(allow);
-			return EXIT_FAITHFUL;
+			return PARSE_DONE;
 		}
-		if (strcmp(arg, "-V") == 0 || strcmp(arg, "--version") == 0) {
+		if (opt_is(arg, "-V", "--version")) {
 			print_version();
-			free(allow);
-			return EXIT_FAITHFUL;
+			return PARSE_DONE;
 		}
 		if (strcmp(arg, "--json") == 0) {
-			json = 1;
+			opt->json = 1;
+			i++;
 			continue;
 		}
-		if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
-			if (i + 1 >= argc) {
-				fprintf(stderr, "%s: %s requires a FILE argument\n",
-				        progname, arg);
-				hint_help();
-				free(allow);
-				return EXIT_ERROR;
-			}
-			output = argv[++i];
+		if (opt_is(arg, "-o", "--output")) {
+			opt->output = option_arg(argc, argv, i, "a FILE argument");
+			if (!opt->output)
+				return PARSE_ERROR;
+			i += 2;
 			continue;
 		}
 		if (strcmp(arg, "--allow") == 0) {
-			if (i + 1 >= argc) {
-				fprintf(stderr,
-				        "%s: --allow requires a PREFIX argument\n",
-				        progname);
-				hint_help();
-				free(allow);
-				return EXIT_ERROR;
-			}
-			allow = xrealloc(allow, (size_t)(nallow + 1) * sizeof(*allow));
-			allow[nallow++] = argv[++i];
+			char *pfx = option_arg(argc, argv, i, "a PREFIX argument");
+			if (!pfx)
+				return PARSE_ERROR;
+			opt->allow = xrealloc(
+				opt->allow,
+				(size_t)(opt->nallow + 1) * sizeof(*opt->allow));
+			opt->allow[opt->nallow++] = pfx;
+			i += 2;
 			continue;
 		}
 
 		fprintf(stderr, "%s: unknown option '%s'\n", progname, arg);
 		hint_help();
-		free(allow);
+		return PARSE_ERROR;
+	}
+
+	opt->cmd_index = i;
+	return PARSE_RUN;
+}
+
+int main(int argc, char **argv)
+{
+	struct options opt;
+	memset(&opt, 0, sizeof opt);
+
+	enum parse_result pr = parse_args(argc, argv, &opt);
+	if (pr == PARSE_DONE) {
+		free(opt.allow);
+		return EXIT_FAITHFUL;
+	}
+	if (pr == PARSE_ERROR) {
+		free(opt.allow);
 		return EXIT_ERROR;
 	}
 
-	if (i >= argc) {
+	if (opt.cmd_index >= argc) {
 		fprintf(stderr, "%s: no command given\n", progname);
 		hint_help();
-		free(allow);
+		free(opt.allow);
 		return EXIT_ERROR;
 	}
+
+	char **cmd = &argv[opt.cmd_index];
 
 	struct audit au;
 	memset(&au, 0, sizeof au);
 
-	if (trace_run(&argv[i], &au) < 0) {
+	if (trace_run(cmd, &au) < 0) {
 		fprintf(stderr, "%s: could not start tracing: %s\n", progname,
 		        strerror(errno));
 		audit_free(&au);
-		free(allow);
+		free(opt.allow);
 		return EXIT_ERROR;
 	}
 	if (au.exec_failed) {
-		fprintf(stderr, "%s: cannot run '%s': %s\n", progname, argv[i],
+		fprintf(stderr, "%s: cannot run '%s': %s\n", progname, cmd[0],
 		        strerror(au.exec_errno));
 		audit_free(&au);
-		free(allow);
+		free(opt.allow);
 		return EXIT_ERROR;
 	}
 
 	struct vec findings = {0};
-	reconcile(&au, &findings, allow, nallow);
+	reconcile(&au, &findings, opt.allow, opt.nallow);
 
-	if (output) {
-		FILE *f = fopen(output, "w");
+	if (opt.output) {
+		FILE *f = fopen(opt.output, "w");
 		if (!f) {
 			fprintf(stderr, "%s: cannot open '%s': %s\n", progname,
-			        output, strerror(errno));
+			        opt.output, strerror(errno));
 			findings_free(&findings);
 			audit_free(&au);
-			free(allow);
+			free(opt.allow);
 			return EXIT_ERROR;
 		}
 		report_json(f, &au, &findings);
 		fclose(f);
 		report_human(stdout, &au, &findings);
-	} else if (json) {
+	} else if (opt.json) {
 		report_json(stdout, &au, &findings);
 	} else {
 		report_human(stdout, &au, &findings);
@@ -182,6 +218,6 @@ int main(int argc, char **argv)
 
 	findings_free(&findings);
 	audit_free(&au);
-	free(allow);
+	free(opt.allow);
 	return code;
 }

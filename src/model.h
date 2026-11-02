@@ -53,8 +53,8 @@ struct finding {
 /* ----- the whole audit ----- */
 
 struct audit {
-	struct vec lines;  /* struct out_line*  */
-	struct vec events; /* struct file_event* */
+	struct vec lines;  /* each item: one out_line */
+	struct vec events; /* each item: one file_event */
 	char **argv;       /* the traced command (not owned) */
 	int exited;        /* child called exit() */
 	int exit_code;     /* ...with this status */
