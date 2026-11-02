@@ -72,6 +72,28 @@ verba: 3 contradictions between words and syscalls:
 command exited with status 1.
 ```
 
+The mechanical checks above run by default. The mistranslation heuristic is
+opt-in: `--heuristic` reports it in its own block, `--strict` also makes it count
+toward the exit code. Here a write fails because its parent directory is missing
+(`ENOENT`), but the program blames a permission problem:
+
+```console
+$ verba --strict ./fixtures/mistranslator.sh
+verba: no mechanical contradictions found.
+
+verba: 1 heuristic finding (errno vs. claim):
+
+  [mistranslation] /verba-no-such-dir-xyz/output.txt
+      output reads like EACCES but the call failed with ENOENT
+      words: "cannot create /verba-no-such-dir-xyz/output.txt: permission denied"
+      deed:  openat failed with ENOENT
+
+command exited with status 1.
+```
+
+Without a flag the same command stays silent: the wording is a judgement call,
+not a mechanical fact, so it never pollutes the default report.
+
 `--json` emits the same findings plus the full claim and trace tables under a
 versioned schema (`"schema": 2`). Each finding carries a `"heuristic"` flag
 (`true` for phase-2 mistranslations, `false` for the mechanical checks).
