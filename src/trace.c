@@ -273,23 +273,24 @@ static void push_event(struct tctx *c, pid_t pid, enum file_action action,
 
 /* ---- output capture ---- */
 
-static void emit_line(struct tctx *c, int stream, const char *start, size_t len)
+static void emit_line(struct audit *au, unsigned long *order, int stream,
+                      const char *start, size_t len)
 {
 	while (len > 0 && start[len - 1] == '\r')
 		len--;
 	struct out_line *l = xmalloc(sizeof *l);
-	l->order = c->order++;
+	l->order = (*order)++;
 	l->stream = stream;
 	l->text = xstrndup(start, len);
-	vec_push(&c->au->lines, l);
+	vec_push(&au->lines, l);
 }
 
 static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
                     const char *data, size_t n)
 {
-	if (lb->len + n + 1 > lb->cap) {
-		while (lb->cap < lb->len + n + 1)
-			lb->cap = lb->cap ? lb->cap * 2 : 256;
+	size_t need = lb->len + n + 1;
+	if (need > lb->cap) {
+		lb->cap = need;
 		lb->buf = xrealloc(lb->buf, lb->cap);
 	}
 	memcpy(lb->buf + lb->len, data, n);
@@ -298,7 +299,7 @@ static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
 	size_t start = 0;
 	for (size_t i = 0; i < lb->len; i++) {
 		if (lb->buf[i] == '\n') {
-			emit_line(c, stream, lb->buf + start, i - start);
+			emit_line(c->au, &c->order, stream, lb->buf + start, i - start);
 			start = i + 1;
 		}
 	}
@@ -311,7 +312,7 @@ static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
 static void lb_flush(struct tctx *c, struct linebuf *lb, int stream)
 {
 	if (lb->len > 0)
-		emit_line(c, stream, lb->buf, lb->len);
+		emit_line(c->au, &c->order, stream, lb->buf, lb->len);
 	lb->len = 0;
 }
 

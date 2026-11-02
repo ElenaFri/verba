@@ -38,11 +38,12 @@ char *xstrdup(const char *s)
 
 char *xstrndup(const char *s, size_t n)
 {
-	/* strndup copies at most n bytes, stopping at the first NUL, and sizes
-	 * the allocation to the result — no over-read of the source. */
-	char *p = strndup(s, n);
-	if (!p)
-		oom();
+	/* Copy at most n bytes, stopping at the first NUL. The length is measured
+	 * up front so the allocation and the copy are provably the same size. */
+	size_t len = strnlen(s, n);
+	char *p = xmalloc(len + 1);
+	memcpy(p, s, len);
+	p[len] = '\0';
 	return p;
 }
 
@@ -78,6 +79,37 @@ char *path_join(const char *dir, const char *rel)
 	return out;
 }
 
+/* Advance *pp past any run of '/' and then over one path component. On success
+ * the component is reported via *start (first byte) and *seg (length), *pp is
+ * left just past it, and 1 is returned. Returns 0 at the end of the string. */
+static int next_component(const char **pp, const char **start, size_t *seg)
+{
+	const char *p = *pp;
+	while (*p == '/')
+		p++;
+	if (*p == '\0') {
+		*pp = p;
+		return 0;
+	}
+	*start = p;
+	while (*p != '\0' && *p != '/')
+		p++;
+	*seg = (size_t)(p - *start);
+	*pp = p;
+	return 1;
+}
+
+/* Apply "..": drop the last component already written to `out` by scanning back
+ * over it and its leading '/'. Returns the new write position. */
+static size_t pop_component(const char *out, size_t pos)
+{
+	while (pos > 0 && out[pos - 1] != '/')
+		pos--;
+	if (pos > 0)
+		pos--; /* drop the separating '/' */
+	return pos;
+}
+
 char *path_lexical(const char *abs)
 {
 	/* Single pass, always rooted at '/'. Components are appended straight into
@@ -90,31 +122,22 @@ char *path_lexical(const char *abs)
 	size_t pos = 0;
 
 	const char *p = abs;
-	while (*p) {
-		while (*p == '/')
-			p++;
-		if (*p == '\0')
-			break;
-
-		const char *start = p;
-		while (*p != '\0' && *p != '/')
-			p++;
-		size_t seg = (size_t)(p - start);
-
+	const char *start = NULL;
+	size_t seg = 0;
+	while (next_component(&p, &start, &seg)) {
 		if (seg == 1 && start[0] == '.')
 			continue;
 		if (seg == 2 && start[0] == '.' && start[1] == '.') {
-			while (pos > 0 && out[pos - 1] != '/')
-				pos--;
-			if (pos > 0)
-				pos--; /* drop the separating '/' */
+			pos = pop_component(out, pos);
 			continue;
 		}
 
 		if (pos < cap - 1)
 			out[pos++] = '/';
-		for (size_t i = 0; i < seg && pos < cap - 1; i++)
-			out[pos++] = start[i];
+		for (size_t i = 0; i < seg; i++) {
+			if (pos < cap - 1)
+				out[pos++] = start[i];
+		}
 	}
 
 	if (pos == 0) {
