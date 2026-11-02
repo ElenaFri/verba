@@ -63,3 +63,8 @@ dkms.conf
 *.gcov
 coverage.info
 /coverage/
+
+# test scratch dirs (harness + local valgrind runs)
+.verba-test.*
+.vg/
+.vg-test/

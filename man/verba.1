@@ -16,10 +16,30 @@ watching both sides of the conversation \(em its output and exit code on one
 side, the file syscalls it actually makes on the other \(em and reports every
 contradiction between the two.
 .PP
-This is an early-development stub. The tracer and reconciliation engine are not
-implemented yet; see
-.B TODO.md
-in the source tree for the roadmap.
+Three contradiction classes are reported:
+.TP
+.B faithless claim
+The output claims a write to a path that no traced process ever opened for
+writing.
+.TP
+.B undeclared write
+A file was created, modified or removed on disk, but no output line mentions it.
+Writes under
+.IR /tmp ,
+.IR /dev ,
+.IR /proc ,
+.IR /sys ,
+.IR /run ,
+.IR $TMPDIR ,
+and to non-files (pipes, sockets) are ignored; extend the set with
+.BR \-\-allow .
+.TP
+.B discourse mismatch
+The output reports success while the command failed (exit status other than 0),
+or reports an error while the command exited 0.
+.PP
+.B verba
+is pure C with no runtime dependencies and targets x86-64.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help
@@ -27,6 +47,19 @@ Show a help message and exit.
 .TP
 .BR \-V ", " \-\-version
 Show version information and exit.
+.TP
+.B \-\-json
+Write the JSON report to standard output.
+.TP
+.BR \-o ", " \-\-output " " \fIFILE\fR
+Write the JSON report to
+.IR FILE ;
+the human-readable summary is still printed to standard output.
+.TP
+.BR \-\-allow " " \fIPREFIX\fR
+Treat writes under
+.I PREFIX
+as declared. May be given more than once.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -37,6 +70,10 @@ Contradictions were found between words and syscalls.
 .TP
 .B 2
 Usage error or verba-internal failure.
+.PP
+The traced command's own exit status is reported in the output, not propagated
+as the exit status of
+.BR verba .
 .SH SEE ALSO
 .BR strace (1),
 .BR ptrace (2)

@@ -8,7 +8,7 @@ VERSION := 0.0.0
 CC      ?= cc
 CSTD    := -std=c11
 WARN    := -Wall -Wextra -Werror
-CPPFLAGS += -D_POSIX_C_SOURCE=200809L -DVERBA_VERSION=\"$(VERSION)\"
+CPPFLAGS += -D_GNU_SOURCE -DVERBA_VERSION=\"$(VERSION)\"
 CFLAGS  ?= -O2 -g
 CFLAGS  += $(CSTD) $(WARN)
 COVFLAGS := $(CSTD) $(WARN) -O0 -g --coverage

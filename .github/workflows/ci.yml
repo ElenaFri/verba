@@ -13,7 +13,7 @@ jobs:
         cc: [gcc, musl-gcc]
     name: build (${{ matrix.cc }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install toolchain
         run: |
@@ -27,19 +27,24 @@ jobs:
         run: make test CC=${{ matrix.cc }}
 
       # valgrind is run against the glibc build only; it does not reliably
-      # instrument musl-linked binaries.
+      # instrument musl-linked binaries. error-exitcode 99 keeps valgrind's
+      # own failures distinct from verba's 0/1/2 contract.
       - name: Valgrind
         if: matrix.cc == 'gcc'
         run: |
-          valgrind --error-exitcode=1 --leak-check=full ./verba --version
-          valgrind --error-exitcode=1 --leak-check=full ./verba --help
-          valgrind --error-exitcode=1 --leak-check=full ./verba --nope || test $? -ne 1
+          VG="valgrind --error-exitcode=99 --leak-check=full"
+          $VG ./verba --version
+          $VG ./verba --help
+          $VG ./verba --nope || test $? -eq 2
+          mkdir -p .vg
+          $VG ./verba ./fixtures/honest.sh ./.vg/honest.out
+          $VG ./verba ./fixtures/liar-installer.sh ./.vg/undeclared.out || test $? -eq 1
 
   coverage:
     runs-on: ubuntu-latest
     name: coverage
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install toolchain
         run: |
@@ -50,7 +55,7 @@ jobs:
         run: make coverage
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
           files: coverage.info
           fail_ci_if_error: false

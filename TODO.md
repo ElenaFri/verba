@@ -29,86 +29,98 @@
 
 ### 1.1 Tracer
 
-- [ ] `fork` + `exec` under `PTRACE_TRACEME`, trace **enter + exit** of:
-  `open`, `openat`, `creat`, `unlink`, `unlinkat`, `rename`, `renameat`,
-  `link`, `symlink`, `mkdir`, `mkdirat` — plus `errno` on failure.
-- [ ] Track `write` on fds already resolved to a file opened with
+- [x] `fork` + `exec` under `PTRACE_TRACEME`, trace **enter + exit** of:
+  `open`, `openat`, `creat`, `unlink`, `unlinkat`, `rename`, `renameat`
+  (+ `renameat2`), `link`, `linkat`, `symlink`, `symlinkat`, `mkdir`,
+  `mkdirat` — plus `errno` on failure. Enter/exit are disambiguated with
+  `PTRACE_GET_SYSCALL_INFO`, with the entry/exit toggle kept as a kernel < 5.3
+  fallback.
+- [x] Track `write` on fds already resolved to a file opened with
   `O_WRONLY|O_RDWR|O_CREAT` — a file opened but never written counts as
   *opened*, not *written*.
-- [ ] Follow children: `PTRACE_O_TRACEFORK|TRACEVFORK|TRACECLONE|TRACEEXEC`.
+- [x] Follow children: `PTRACE_O_TRACEFORK|TRACEVFORK|TRACECLONE|TRACEEXEC`.
   `make`-style scripts spawn helpers; they all speak for the program.
-- [ ] Record per syscall: pid, path arguments, flags, result, errno. Resolve
+- [x] Record per syscall: pid, path arguments, flags, result, errno. Resolve
   relative paths against the calling child's cwd — except `*at` variants, which
-  resolve against their `dirfd` (`AT_FDCWD` = cwd).
-- [ ] Read path strings out of the tracee's address space (`PTRACE_PEEKDATA` or
-  `process_vm_readv`); handle paths that straddle word/page boundaries and
-  guard against missing NUL terminators.
-- [ ] Count `O_CREAT`/`O_TRUNC` (and `ftruncate`) as a *modification* even when
-  no `write(2)` follows — truncating a file is changing it.
-- [ ] Robustness: `PTRACE_O_EXITKILL` so tracees never outlive verba, forward
-  signals to the child, and propagate its real exit status (see 1.5).
-- [ ] Architecture portability: syscall numbers and the arg-register layout
-  differ per arch. MVP targets x86-64; isolate the arch map so aarch64 can
-  follow.
+  resolve against their `dirfd` (`AT_FDCWD` = cwd). Done via `/proc/<pid>/cwd`
+  and `/proc/<pid>/fd/<dirfd>`.
+- [x] Read path strings out of the tracee's address space (`PTRACE_PEEKDATA`,
+  word-by-word); handles paths that straddle word boundaries and missing NUL
+  terminators.
+- [x] Count `O_CREAT`/`O_TRUNC` (and `ftruncate`) as a *modification* even when
+  no `write(2)` follows — truncating a file is changing it. (`O_CREAT` counts
+  only when the target did not already exist, checked with `lstat` at enter.)
+- [x] Robustness: `PTRACE_O_EXITKILL` so tracees never outlive verba, forward
+  signals to the child, and record its real exit status (surfaced in the
+  report; see the 1.5 note on how it relates to verba's own exit code).
+- [x] Architecture portability: syscall numbers and the arg-register layout
+  differ per arch. MVP targets x86-64 (`arch.h`, `#error` elsewhere); the arch
+  map is isolated so aarch64 can follow.
 
 ### 1.2 Output capture
 
-- [ ] Capture stdout and stderr **unbuffered, interleaved**, tagged with a
-  global order counter.
-- [ ] Decision to make: pipes (simple, some programs change behavior when
-  stdout is not a tty) vs pty (faithful, more complex). MVP: pipes; document
-  the caveat. Revisit in phase 3.
+- [x] Capture stdout and stderr **interleaved**, tagged with a global order
+  counter, split into lines (`signalfd` + `poll` drain loop).
+- [x] Decision made: **pipes** in the MVP (simple; some programs change behavior
+  when stdout is not a tty — documented caveat). pty capture is deferred to
+  phase 3.
 
 ### 1.3 Path extraction (the "words")
 
-- [ ] Extract from program output: absolute paths, `./` and bare relative
-  paths, `~/…`, `$HOME/…`.
-- [ ] Resolve relative paths against the cwd **at the time of the claim**
-  (commands print before or after acting — order matters).
-- [ ] Canonicalize: symlink resolution, `..`, trailing slashes. Paths that
-  are the same after canonicalization are the same word.
+- [x] Extract from program output: absolute paths, `./` and bare relative
+  paths (those containing a slash), `~/…`, `$HOME/…`; URLs are skipped.
+- [x] Canonicalize: `..`, trailing slashes, symlink resolution. Paths that are
+  the same after canonicalization are the same word.
+- [~] Resolve relative paths against the cwd **at the time of the claim**.
+  MVP resolves against a single cwd (verba's startup cwd, shared with the
+  child); per-claim cwd tracking across a child `chdir` is deferred.
 
 ### 1.4 Reconciliation engine
 
 Three checks, all mechanical, all reportable in MVP:
 
-- [ ] **faithless claim** — output claims writing path P (heuristic: P appears
-  in a sentence with a success/write verb — see pattern list below), but P
-  was never opened for writing by any traced process.
-- [ ] **undeclared write** — file created/modified, never mentioned in any
-  output. Whitelist (config-overridable): `$TMPDIR`, `/tmp`, `/dev`,
-  inherited fds, sockets, pipes, the tty.
-- [ ] **discourse mismatch** — success-patterns in output vs exit code ≠ 0,
+- [x] **faithless claim** — output claims writing path P (P appears in a line
+  with a write/success verb), but P was never opened for writing by any traced
+  process.
+- [x] **undeclared write** — file created/modified, never mentioned in any
+  output. Whitelist: `/tmp`, `/dev`, `/proc`, `/sys`, `/run`, `$TMPDIR`,
+  non-absolute targets (pipes/sockets/anon fds), plus user `--allow PREFIX`.
+- [x] **discourse mismatch** — success-patterns in output vs exit code ≠ 0,
   and the reverse ("error"-patterns, exit 0).
 
-Verb/pattern lists for phase 1 stay minimal and explicit in code:
-`saved`, `written`, `created`, `wrote`.
+Verb/pattern lists for phase 1 stay minimal and explicit in code
+(`src/words.c`): write verbs (`saved`, `wrote`, `created`, …), success words,
+error words.
 
-- [ ] **Open decision:** do i18n verbs (FR `enregistré`, `écrit`, …) ship in
-  phase 1, or wait for the phase 2 pattern DB? Leaning English-only in phase 1.
+- [x] **Decision made:** English-only in phase 1. i18n verbs (FR `enregistré`,
+  `écrit`, …) wait for the phase 2 pattern DB.
 
 ### 1.5 Report
 
-- [ ] Human report: one block per finding — type, paths involved, evidence
-  (the offending output line + the absent syscall, or vice versa).
-- [ ] JSON output (`--json` / `-o <file>` — reconcile the spelling with the
-  README): findings + full claim/trace tables, versioned schema.
-- [ ] Exit codes: `0` faithful, `1` contradictions, `2` internal error.
-- [ ] **Open decision:** how to surface the *child's* own exit status without
-  colliding with verba's `0/1/2`? (e.g. `--exit-code=child`, or shift verba's
-  codes). Matters for the CI-friendly constraint.
+- [x] Human report: one block per finding — type, paths involved, evidence
+  (the offending output line + the absent/extra syscall).
+- [x] JSON output (`--json` to stdout, `-o FILE` to a file): findings plus the
+  claim and trace tables, versioned schema (`schema: 1`).
+- [x] Exit codes: `0` faithful, `1` contradictions, `2` usage/internal error.
+- [x] **Decision made (for now):** verba's exit code stays findings-based
+  (`0/1/2`); the child's own exit status is reported in the JSON
+  (`exit.code` / `exit.signal`) but not propagated as verba's code. A
+  `--exit-code=child` style switch is deferred to a later phase.
 
 ### 1.6 Self-test corpus
 
-- [ ] `fixtures/` — scripts that deliberately lie each way: claim-without-write
-  (classic installer), undeclared `~/.bashrc` touch, success+exit1, honest
-  program (negative control), static binary fixture, `make`-spawning fixture.
-- [ ] `make test` runs the corpus through verba and diffs against expected
-  findings.
+- [x] `fixtures/honest.sh` — honest negative control (says what it does, exit 0).
+- [x] `fixtures/liar-installer.sh` — a bogus installer that trips all three
+  anomaly classes at once: claim-without-write, a child-spawned undeclared
+  write (also exercises follow-fork), and success-text + exit 1.
+- [x] `make test` runs the CLI smoke tests and the corpus through verba,
+  asserting the expected finding types and exit codes (`tests/run.sh`).
+- [ ] Still wanted: a dedicated static-binary fixture and a `make`-spawning
+  fixture; full expected-findings diffs rather than type-presence assertions.
 
-**Definition of done (MVP):** the corpus passes, valgrind clean,
-`verba ./fixtures/liar-installer.sh` shows the three anomaly classes with
-exact evidence lines, and the README's table is real.
+**Definition of done (MVP):** met — the corpus passes, the build is valgrind
+clean, `verba ./fixtures/liar-installer.sh <path>` shows the three anomaly
+classes with their evidence lines, and the README's table is real.
 
 ## Phase 2 — mistranslation auditing (heuristic, opt-in flag)
 
@@ -129,5 +141,7 @@ exact evidence lines, and the README's table is real.
 
 ---
 
-*Status: phase 0 complete; phase 1 (the tracer) is next. This file will be
-updated before each release.*
+*Status: phase 0 complete; phase 1 (the mechanical audit) complete and
+valgrind-clean — verba traces a command and reports the three anomaly classes.
+Phase 2 (mistranslation auditing) is next. This file is updated before each
+release.*
