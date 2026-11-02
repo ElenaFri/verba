@@ -1,0 +1,44 @@
+.TH VERBA 1 "2026-11-02" "verba 0.0.0" "User Commands"
+.SH NAME
+verba \- audit what a command says against what it does
+.SH SYNOPSIS
+.B verba
+.RI [ options ]
+.I command
+.RI [ args ...]
+.SH DESCRIPTION
+.B verba
+runs
+.I command
+under
+.BR ptrace (2),
+watching both sides of the conversation \(em its output and exit code on one
+side, the file syscalls it actually makes on the other \(em and reports every
+contradiction between the two.
+.PP
+This is an early-development stub. The tracer and reconciliation engine are not
+implemented yet; see
+.B TODO.md
+in the source tree for the roadmap.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show a help message and exit.
+.TP
+.BR \-V ", " \-\-version
+Show version information and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+Faithful: the command ran and no contradictions were found.
+.TP
+.B 1
+Contradictions were found between words and syscalls.
+.TP
+.B 2
+Usage error or verba-internal failure.
+.SH SEE ALSO
+.BR strace (1),
+.BR ptrace (2)
+.SH AUTHOR
+Elena Frison.

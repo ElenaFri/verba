@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, musl-gcc]
+    name: build (${{ matrix.cc }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential musl-tools valgrind
+
+      - name: Build
+        run: make CC=${{ matrix.cc }}
+
+      - name: Test
+        run: make test CC=${{ matrix.cc }}
+
+      # valgrind is run against the glibc build only; it does not reliably
+      # instrument musl-linked binaries.
+      - name: Valgrind
+        if: matrix.cc == 'gcc'
+        run: |
+          valgrind --error-exitcode=1 --leak-check=full ./verba --version
+          valgrind --error-exitcode=1 --leak-check=full ./verba --help
+          valgrind --error-exitcode=1 --leak-check=full ./verba --nope || test $? -ne 1
+
+  coverage:
+    runs-on: ubuntu-latest
+    name: coverage
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential lcov
+
+      - name: Generate coverage
+        run: make coverage
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.info
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

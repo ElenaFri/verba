@@ -53,3 +53,13 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# verba build output
+/verba
+
+# coverage artifacts
+*.gcda
+*.gcno
+*.gcov
+coverage.info
+/coverage/

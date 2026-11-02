@@ -21,9 +21,9 @@
 
 ## Phase 0 — scaffolding
 
-- [ ] Repo skeleton, Makefile (`all`, `test`, `clean`, `install`), MIT license.
-- [ ] CI (GitHub Actions): build on gcc + musl-gcc, `-Wall -Wextra -Werror`, valgrind run.
-- [ ] `verba --version`, `--help`, man page stub.
+- [x] Repo skeleton, Makefile (`all`, `test`, `clean`, `install`), MIT license.
+- [x] CI (GitHub Actions): build on gcc + musl-gcc, `-Wall -Wextra -Werror`, valgrind run.
+- [x] `verba --version`, `--help`, man page stub.
 
 ## Phase 1 — MVP: the mechanical audit
 
@@ -129,4 +129,5 @@ exact evidence lines, and the README's table is real.
 
 ---
 
-*Status: phase 0 not started. This file will be updated before each release.*
+*Status: phase 0 complete; phase 1 (the tracer) is next. This file will be
+updated before each release.*
