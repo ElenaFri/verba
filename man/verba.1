@@ -74,6 +74,11 @@ Treat writes under
 .I PREFIX
 as declared. May be given more than once.
 .TP
+.B \-\-tty
+Run the command on a pty instead of pipes, for programs that change what they
+say when stdout is not a terminal. stdout and stderr are then captured as one
+combined stream (reported as \"tty\" in JSON).
+.TP
 .B \-\-heuristic
 Also run the phase-2 mistranslation checks
 .RI ( errno

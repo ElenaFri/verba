@@ -159,7 +159,11 @@ classes with their evidence lines, and the README's table is real.
 
 ## Phase 3 — polish
 
-- [ ] pty capture mode (`--tty`) for programs that change behavior off-terminal.
+- [x] pty capture mode (`--tty`) for programs that change behavior
+  off-terminal. The command runs as a session leader on a pty slave
+  (`posix_openpt`/`grantpt`/`unlockpt`), stdout and stderr arrive as one
+  combined stream tagged `tty` in JSON; EOF on the master (EIO) replaces the
+  pipes' EOF. The deferred caveat from phase 1.2 is closed.
 - [ ] `--follow PID` (attach) — stretch goal, changes the threat model of the audit.
 - [ ] Shell-completion, man page complete, packaging (deb, AUR).
 - [ ] Performance: trace enter-only where exit data is not needed;
@@ -170,7 +174,8 @@ classes with their evidence lines, and the README's table is real.
 *Status: phase 0 complete; phase 1 (the mechanical audit) complete and
 valgrind-clean — verba traces a command and reports the three anomaly classes,
 with the test suite at ≈ 99.9% line coverage. Phase 2 (opt-in, heuristic
-mistranslation auditing: errno vs. claim, behind `--heuristic`/`--strict`) is
+mistranslation auditing: errno vs. claim, behind `--heuristic`/`--strict`)
 complete — built-in errno↔phrase dictionary plus a user-extensible JSON one
-(`--patterns FILE`). Phase 3 (polish) is next. This file is updated before each
-release.*
+(`--patterns FILE`). Phase 3 under way: pty capture (`--tty`) is done; next:
+performance (enter-only tracing, benchmark vs strace), packaging, `--follow`.
+This file is updated before each release.*

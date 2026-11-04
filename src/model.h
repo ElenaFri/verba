@@ -9,7 +9,7 @@
 
 struct out_line {
 	unsigned long order; /* global interleave counter */
-	int stream;          /* 1 = stdout, 2 = stderr */
+	int stream;          /* 0 = tty (combined), 1 = stdout, 2 = stderr */
 	char *text;          /* line content, newline stripped */
 };
 

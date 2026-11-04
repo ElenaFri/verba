@@ -726,7 +726,8 @@ static void handle_wait(struct tctx *c, pid_t pid, int status)
 	}
 }
 
-static int drain_pipe(struct tctx *c, int fd, int stream, struct linebuf *lb)
+static int drain_fd(struct tctx *c, int fd, int stream, struct linebuf *lb,
+                    int tty)
 {
 	char buf[4096];
 	for (;;) {
@@ -739,6 +740,9 @@ static int drain_pipe(struct tctx *c, int fd, int stream, struct linebuf *lb)
 			return 0; /* EOF */
 		if (errno == EINTR)
 			continue; /* LCOV_EXCL_LINE: SIGCHLD is blocked via signalfd */
+		/* On a pty master, EIO means every slave side is closed: EOF. */
+		if (tty && errno == EIO)
+			return 0;
 		return 1; /* EAGAIN: still open */
 	}
 }
@@ -762,13 +766,17 @@ static void reap_children(struct tctx *c, int sfd)
 		handle_wait(c, w, ws);
 }
 
-/* Pump tracee stops and child output until both run dry. */
-static void event_loop(struct tctx *c, int sfd, int outfd, int errfd)
+/* Pump tracee stops and child output until both run dry. In tty mode there is
+ * a single capture fd (the pty master) and one combined stream. */
+static void event_loop(struct tctx *c, int sfd, int outfd, int errfd, int tty)
 {
-	set_nonblock(outfd);
-	set_nonblock(errfd);
-	int out_open = 1;
-	int err_open = 1;
+	int out_stream = tty ? 0 : 1;
+	int out_open = (outfd >= 0);
+	int err_open = (errfd >= 0);
+	if (outfd >= 0)
+		set_nonblock(outfd);
+	if (errfd >= 0)
+		set_nonblock(errfd);
 
 	while (c->tracees.len > 0 || out_open || err_open) {
 		struct pollfd pfd[3];
@@ -804,15 +812,16 @@ static void event_loop(struct tctx *c, int sfd, int outfd, int errfd)
 		if (isig >= 0 && (pfd[isig].revents & POLLIN))
 			reap_children(c, sfd);
 		if (iout >= 0 && (pfd[iout].revents & (POLLIN | POLLHUP)) &&
-		    !drain_pipe(c, outfd, 1, &c->lb_out))
+		    !drain_fd(c, outfd, out_stream, &c->lb_out, tty))
 			out_open = 0;
 		if (ierr >= 0 && (pfd[ierr].revents & (POLLIN | POLLHUP)) &&
-		    !drain_pipe(c, errfd, 2, &c->lb_err))
+		    !drain_fd(c, errfd, 2, &c->lb_err, tty))
 			err_open = 0;
 	}
 
-	lb_flush(c, &c->lb_out, 1);
-	lb_flush(c, &c->lb_err, 2);
+	lb_flush(c, &c->lb_out, out_stream);
+	if (!tty)
+		lb_flush(c, &c->lb_err, 2);
 }
 
 static void tctx_cleanup(struct tctx *c)
@@ -836,13 +845,43 @@ static void tctx_cleanup(struct tctx *c)
 	free(c->lb_err.buf);
 }
 
-int trace_run(char **argv, struct audit *au)
+int trace_run(char **argv, struct audit *au, int tty)
 {
-	int outp[2];
-	int errp[2];
+	int outp[2] = {-1, -1};
+	int errp[2] = {-1, -1};
+	int master = -1;
+	char slave[64];
+
+	if (tty) {
+		/* LCOV_EXCL_START: pty allocation failure is defensive. */
+		master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+		if (master < 0)
+			return -1;
+		if (grantpt(master) < 0 || unlockpt(master) < 0 ||
+		    ptsname_r(master, slave, sizeof slave) != 0) {
+			close(master);
+			return -1;
+		}
+		/* LCOV_EXCL_STOP */
+	} else {
+		/* LCOV_EXCL_START: pipe setup failure is defensive. */
+		if (pipe(outp) || pipe(errp))
+			return -1;
+		/* LCOV_EXCL_STOP */
+	}
+
 	int execp[2];
-	if (pipe(outp) || pipe(errp) || pipe2(execp, O_CLOEXEC))
-		return -1; /* LCOV_EXCL_LINE: pipe setup failure is defensive */
+	/* LCOV_EXCL_START: pipe setup failure is defensive. */
+	if (pipe2(execp, O_CLOEXEC)) {
+		if (tty)
+			close(master);
+		else {
+			close(outp[0]);
+			close(errp[0]);
+		}
+		return -1;
+	}
+	/* LCOV_EXCL_STOP */
 
 	sigset_t mask;
 	sigset_t old;
@@ -872,12 +911,28 @@ int trace_run(char **argv, struct audit *au)
 		/* Child: wire up stdio, announce ourselves to ptrace, exec. On
 		 * failure the errno is shipped back over the CLOEXEC pipe. */
 		sigprocmask(SIG_SETMASK, &old, NULL);
-		dup2(outp[1], STDOUT_FILENO);
-		dup2(errp[1], STDERR_FILENO);
-		close(outp[0]);
-		close(outp[1]);
-		close(errp[0]);
-		close(errp[1]);
+		if (tty) {
+			/* New session with the pty slave as the controlling
+		 * terminal: this is what makes isatty(1) true and gives
+		 * the child a terminal of its own. */
+			setsid();
+			int sl = open(slave, O_RDWR);
+			if (sl >= 0) {
+				dup2(sl, STDIN_FILENO);
+				dup2(sl, STDOUT_FILENO);
+				dup2(sl, STDERR_FILENO);
+				if (sl > STDERR_FILENO)
+					close(sl);
+			}
+			close(master);
+		} else {
+			dup2(outp[1], STDOUT_FILENO);
+			dup2(errp[1], STDERR_FILENO);
+			close(outp[0]);
+			close(outp[1]);
+			close(errp[0]);
+			close(errp[1]);
+		}
 		close(sfd);
 		close(execp[0]);
 		ptrace(PTRACE_TRACEME, 0, 0, 0);
@@ -890,8 +945,12 @@ int trace_run(char **argv, struct audit *au)
 	/* LCOV_EXCL_STOP */
 
 	/* parent */
-	close(outp[1]);
-	close(errp[1]);
+	if (!tty) {
+		/* Without this the parent itself keeps the pipes' write ends
+		 * open and EOF never arrives. */
+		close(outp[1]);
+		close(errp[1]);
+	}
 	close(execp[1]);
 
 	au->argv = argv;
@@ -910,8 +969,12 @@ int trace_run(char **argv, struct audit *au)
 		waitpid(child, &st, 0);
 		au->exec_failed = 1;
 		au->exec_errno = exec_errno;
-		close(outp[0]);
-		close(errp[0]);
+		if (tty)
+			close(master);
+		else {
+			close(outp[0]);
+			close(errp[0]);
+		}
 		close(sfd);
 		sigprocmask(SIG_SETMASK, &old, NULL);
 		return 0;
@@ -926,8 +989,12 @@ int trace_run(char **argv, struct audit *au)
 	int st;
 	/* LCOV_EXCL_START: losing the child before its first stop is defensive. */
 	if (waitpid(child, &st, 0) < 0) {
-		close(outp[0]);
-		close(errp[0]);
+		if (tty)
+			close(master);
+		else {
+			close(outp[0]);
+			close(errp[0]);
+		}
 		close(sfd);
 		sigprocmask(SIG_SETMASK, &old, NULL);
 		return -1;
@@ -941,11 +1008,15 @@ int trace_run(char **argv, struct audit *au)
 	ct->booted = 1;
 	resume(child, 0);
 
-	event_loop(&c, sfd, outp[0], errp[0]);
+	event_loop(&c, sfd, tty ? master : outp[0], tty ? -1 : errp[0], tty);
 	tctx_cleanup(&c);
 
-	close(outp[0]);
-	close(errp[0]);
+	if (tty)
+		close(master);
+	else {
+		close(outp[0]);
+		close(errp[0]);
+	}
 	close(sfd);
 	sigprocmask(SIG_SETMASK, &old, NULL);
 	return 0;

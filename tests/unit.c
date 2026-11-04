@@ -774,6 +774,7 @@ static void test_report_json(void)
 	au.argv = argv;
 	push_line(&au, 1, "on stdout");
 	push_line(&au, 2, "on stderr");
+	push_line(&au, 0, "on tty");
 	/* an event with a rename source (path2) and a control/escape soup. */
 	push_evt(&au, ACT_RENAME, "/new\tname", "/old\"name", 0, "rename");
 
@@ -788,6 +789,7 @@ static void test_report_json(void)
 	CHECK(strstr(out, "\"heuristic\": false") != NULL);
 	CHECK(strstr(out, "\"stream\": \"stdout\"") != NULL);
 	CHECK(strstr(out, "\"stream\": \"stderr\"") != NULL);
+	CHECK(strstr(out, "\"stream\": \"tty\"") != NULL);
 	CHECK(strstr(out, "\"action\": \"rename\"") != NULL);
 	/* escaping: tab, quote, backslash, newline, CR, backspace, form feed,
 	 * and a \u00xx control. */

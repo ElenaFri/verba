@@ -37,6 +37,8 @@ check_exit "--version exits 0"        0 "$verba" --version
 check_exit "unknown option exits 2"   2 "$verba" --nope
 check_exit "no command exits 2"       2 "$verba"
 check_exit "unrunnable command -> 2"  2 "$verba" ./fixtures/does-not-exist-xyz
+check_exit "--tty with an unrunnable command -> 2" 2 "$verba" \
+	--tty ./fixtures/does-not-exist-xyz
 
 # Option parsing: missing arguments, the -- separator, and a bad output path.
 check_exit "-o requires an argument -> 2"      2 "$verba" -o
@@ -147,6 +149,35 @@ faithless_claim /etc/verba-make-liar.conf
 undeclared_write WORK/make.out' "$out"
 else
 	printf 'skip: make not available\n'
+fi
+
+# tty capture: part of what the fixture says is gated on isatty(1) — only a
+# pty reveals the faithless claim. Streams merge into "tty" under --tty.
+out=$("$verba" --json ./fixtures/tty-liar.sh "$work/tty-pipes.out" 2>&1)
+code=$?
+if [ "$code" -eq 1 ]; then
+	pass "tty fixture exits 1 over pipes"
+else
+	bad "tty fixture exit over pipes (want 1, got $code)"
+fi
+check_findings "tty fixture over pipes misses the gated claim" 'discourse_mismatch -
+undeclared_write WORK/tty-pipes.out' "$out"
+
+out=$("$verba" --json --tty ./fixtures/tty-liar.sh "$work/tty-pty.out" 2>&1)
+code=$?
+if [ "$code" -eq 1 ]; then
+	pass "tty fixture exits 1 under --tty"
+else
+	bad "tty fixture exit under --tty (want 1, got $code)"
+fi
+check_findings "tty fixture under --tty sees the gated claim" 'discourse_mismatch -
+faithless_claim /etc/verba-tty-liar.conf
+undeclared_write WORK/tty-pty.out' "$out"
+if printf '%s' "$out" | grep -q '"stream": "tty"'; then
+	pass "tty capture tags lines as stream tty"
+else
+	bad "tty capture did not tag the combined stream"
+	printf '%s\n' "$out"
 fi
 
 # crasher: success text then death by signal -> discourse mismatch, signaled.

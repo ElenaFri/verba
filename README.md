@@ -30,6 +30,10 @@ Writes under `/tmp`, `/dev`, `/proc`, `/sys`, `/run`, `$TMPDIR`, and to
 non-files (pipes, sockets) are ignored as undeclared writes; add more with
 `--allow PREFIX` (repeatable).
 
+Some programs change what they say when stdout is not a terminal; `--tty`
+captures them through a pty, at the price of one combined stream (`"tty"` in
+JSON).
+
 ## Usage
 
 ```sh
@@ -40,6 +44,9 @@ verba [options] <command> [args...]
       --json         write the JSON report to stdout
   -o, --output FILE  write the JSON report to FILE (human summary still on stdout)
       --allow PREFIX  treat writes under PREFIX as declared (repeatable)
+      --tty           run the command on a pty (stdout and stderr are then
+                     captured as one combined stream) — for programs that
+                     change what they say off-terminal
       --heuristic    also run the mistranslation checks (errno vs. claim),
                      reported in a separate block; does not affect the exit code
       --strict       run the heuristics and count them toward the exit code

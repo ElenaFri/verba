@@ -50,6 +50,9 @@ static void print_usage(FILE *out)
 		"  -V, --version        show version and exit\n"
 		"      --json           write the JSON report to stdout\n"
 		"  -o, --output FILE    write the JSON report to FILE\n"
+		"      --tty            run the command on a pty (stdout and stderr are\n"
+		"                       then captured as one combined stream) — for\n"
+		"                       programs that change what they say off-terminal\n"
 		"      --allow PREFIX   treat writes under PREFIX as declared "
 		"(repeatable)\n"
 		"      --heuristic      also run phase-2 mistranslation checks "
@@ -83,6 +86,7 @@ static void hint_help(void)
 
 struct options {
 	int json;
+	int tty; /* capture through a pty instead of pipes */
 	const char *output;
 	char **allow;
 	int nallow;
@@ -136,6 +140,11 @@ static enum parse_result parse_args(int argc, char **argv, struct options *opt)
 		}
 		if (strcmp(arg, "--json") == 0) {
 			opt->json = 1;
+			i++;
+			continue;
+		}
+		if (strcmp(arg, "--tty") == 0) {
+			opt->tty = 1;
 			i++;
 			continue;
 		}
@@ -232,8 +241,8 @@ int main(int argc, char **argv)
 	struct audit au;
 	memset(&au, 0, sizeof au);
 
-	/* LCOV_EXCL_START: only on pipe/signalfd/fork failure inside trace_run. */
-	if (trace_run(cmd, &au) < 0) {
+	/* LCOV_EXCL_START: only on pipe/signalfd/fork/pty failure inside trace_run. */
+	if (trace_run(cmd, &au, opt.tty) < 0) {
 		fprintf(stderr, "%s: could not start tracing: %s\n", progname,
 		        strerror(errno));
 		audit_free(&au);

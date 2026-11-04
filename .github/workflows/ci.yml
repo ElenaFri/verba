@@ -39,6 +39,8 @@ jobs:
           mkdir -p .vg
           $VG ./verba ./fixtures/honest.sh ./.vg/honest.out
           $VG ./verba ./fixtures/liar-installer.sh ./.vg/undeclared.out || test $? -eq 1
+          $VG ./verba ./fixtures/tty-liar.sh ./.vg/tty.out || test $? -eq 1
+          $VG ./verba --tty ./fixtures/tty-liar.sh ./.vg/tty2.out || test $? -eq 1
 
   coverage:
     runs-on: ubuntu-latest

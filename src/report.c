@@ -73,6 +73,15 @@ void report_human(FILE *out, const struct audit *au, const struct vec *findings)
 		fprintf(out, "command killed by signal %d.\n", au->term_signal);
 }
 
+static const char *stream_name(int s)
+{
+	if (s == 0)
+		return "tty";
+	if (s == 2)
+		return "stderr";
+	return "stdout";
+}
+
 /* ---- JSON report ---- */
 
 static void json_str(FILE *out, const char *s)
@@ -161,8 +170,8 @@ void report_json(FILE *out, const struct audit *au, const struct vec *findings)
 	for (size_t i = 0; i < au->lines.len; i++) {
 		const struct out_line *l = au->lines.data[i];
 		fputs(i ? ",\n" : "\n", out);
-		fprintf(out, "    {\"order\": %lu, \"stream\": %s, \"text\": ",
-		        l->order, l->stream == 2 ? "\"stderr\"" : "\"stdout\"");
+		fprintf(out, "    {\"order\": %lu, \"stream\": \"%s\", \"text\": ",
+		        l->order, stream_name(l->stream));
 		json_str(out, l->text);
 		fputc('}', out);
 	}
