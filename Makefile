@@ -48,6 +48,10 @@ tests/syscall_zoo: tests/syscall_zoo.c
 	$(CC) $(CPPFLAGS) $(ZOO_CFLAGS) -o $@ $<
 
 test: $(BIN) $(TESTBINS)
+	# The static fixture needs a static libc; the leading '-' tolerates
+	# toolchains without one (run.sh then skips the check).
+	-$(CC) $(CPPFLAGS) $(CSTD) $(WARN) -O0 -g -static -o tests/static-liar \
+		tests/static-liar.c
 	./tests/unit
 	sh tests/run.sh ./$(BIN) tests/syscall_zoo
 
@@ -75,6 +79,6 @@ uninstall:
 	rm -f $(DESTDIR)$(MANDIR)/verba.1
 
 clean:
-	rm -f $(BIN) $(OBJ) $(TESTBINS)
+	rm -f $(BIN) $(OBJ) $(TESTBINS) tests/static-liar
 	rm -f src/*.gcda src/*.gcno tests/*.gcda tests/*.gcno coverage.info
 	rm -rf coverage

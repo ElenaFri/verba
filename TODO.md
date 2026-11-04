@@ -128,8 +128,13 @@ error words.
 - [x] Line coverage ≥ 95% (lcov ≈ 99.9%), measured by `make coverage` and
   uploaded to Codecov; genuinely defensive or unreachable branches are
   annotated with `LCOV_EXCL` and explained in a comment.
-- [ ] Still wanted: a dedicated static-binary fixture and a `make`-spawning
+- [x] Still wanted: a dedicated static-binary fixture and a `make`-spawning
   fixture; full expected-findings diffs rather than type-presence assertions.
+  Done: `tests/static-liar.c` (built `-static` by `make test`, tolerated and
+  skipped when the toolchain cannot link statically), `fixtures/makefile-liar.mk`
+  (skipped when `make` is absent), and `tests/run.sh` now diffs the canonical
+  type+path set of every fixture's findings against the expected corpus
+  (`findings_json`/`check_findings`) instead of grepping for type presence.
 
 **Definition of done (MVP):** met — the corpus passes, the build is valgrind
 clean, `verba ./fixtures/liar-installer.sh <path>` shows the three anomaly
