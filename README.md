@@ -21,9 +21,10 @@ Pure C, libc only, no runtime dependencies. Traced via `ptrace` (not
 | **mistranslation** *(heuristic)* | error wording disagrees with the real `errno` — "permission denied" when the call actually failed with `ENOENT`, or "saved" when it failed |
 
 The first three are **mechanical**: a disagreement between the output and the
-kernel, reported by default. The last is a **heuristic** (phase 2): it matches
-error phrasings against a small built-in `errno` dictionary and is only computed
-with `--heuristic` or `--strict` (see below).
+kernel, reported by default. The last is a **heuristic**: it matches
+error phrasings against a built-in `errno` dictionary (extend it with
+`--patterns FILE`) and is only computed with `--heuristic` or `--strict` (see
+below).
 
 Writes under `/tmp`, `/dev`, `/proc`, `/sys`, `/run`, `$TMPDIR`, and to
 non-files (pipes, sockets) are ignored as undeclared writes; add more with
@@ -39,10 +40,12 @@ verba [options] <command> [args...]
       --json         write the JSON report to stdout
   -o, --output FILE  write the JSON report to FILE (human summary still on stdout)
       --allow PREFIX  treat writes under PREFIX as declared (repeatable)
-      --heuristic    also run the phase-2 mistranslation checks (errno vs.
-                     claim), reported in a separate block; does not affect
-                     the exit code
+      --heuristic    also run the mistranslation checks (errno vs. claim),
+                     reported in a separate block; does not affect the exit code
       --strict       run the heuristics and count them toward the exit code
+      --patterns FILE  load extra errno↔phrase patterns from FILE (a JSON array
+                       of {"phrase", "errno"} objects), used by the
+                       mistranslation checks (repeatable)
 ```
 
 Exit codes: `0` faithful · `1` contradictions found · `2` usage/internal error.
@@ -93,6 +96,11 @@ command exited with status 1.
 
 Without a flag the same command stays silent: the wording is a judgement call,
 not a mechanical fact, so it never pollutes the default report.
+
+The errno dictionary is user-extensible: `--patterns FILE` (JSON, repeatable)
+adds `"phrase"`/`"errno"` pairs — a French file mapping `"droits insuffisants"`
+to `EACCES` lets the same check audit French-speaking programs
+(`fixtures/mistranslator-fr.sh` demos it).
 
 `--json` emits the same findings plus the full claim and trace tables under a
 versioned schema (`"schema": 2`). Each finding carries a `"heuristic"` flag

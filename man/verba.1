@@ -83,6 +83,12 @@ affect the exit status.
 .TP
 .B \-\-strict
 Run the heuristic checks and count their findings toward the exit status.
+.TP
+.BR \-\-patterns " " \fIFILE\fR
+Load extra errno-to-phrase patterns from
+.IR FILE ,
+a JSON array of {"phrase", "errno"} objects, used by the mistranslation checks.
+May be given more than once.
 .SH EXIT STATUS
 .TP
 .B 0

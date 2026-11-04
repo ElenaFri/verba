@@ -41,6 +41,7 @@ check_exit "unrunnable command -> 2"  2 "$verba" ./fixtures/does-not-exist-xyz
 # Option parsing: missing arguments, the -- separator, and a bad output path.
 check_exit "-o requires an argument -> 2"      2 "$verba" -o
 check_exit "--allow requires an argument -> 2" 2 "$verba" --allow
+check_exit "--patterns requires an argument -> 2" 2 "$verba" --patterns
 check_exit "-o to an unwritable path -> 2"     2 "$verba" \
 	-o /nonexistent-verba-dir-xyz/out.json echo hi
 check_exit "-- separates options from command" 0 "$verba" -- echo hi
@@ -129,6 +130,52 @@ else
 	bad "mistranslator --strict (exit $code):"
 	printf '%s\n' "$out"
 fi
+
+# A user-supplied errno<->phrase dictionary (--patterns, JSON) extends the
+# mistranslation checks to non-English wording.
+cat > "$work/fr-patterns.json" <<'EOF'
+[
+  {"phrase": "droits insuffisants", "errno": "EACCES"},
+  {"phrase": "fichier introuvable", "errno": "ENOENT"}
+]
+EOF
+
+# Without the dictionary the French wording is unreadable -> no finding.
+out=$("$verba" --json --heuristic ./fixtures/mistranslator-fr.sh 2>&1)
+code=$?
+if [ "$code" -eq 0 ] && ! printf '%s' "$out" | grep -q 'mistranslation'; then
+	pass "fr fixture: unreadable without --patterns"
+else
+	bad "fr fixture without --patterns (exit $code):"
+	printf '%s\n' "$out"
+fi
+
+# With it, the same run flags the mistranslation (exit stays mechanical).
+out=$("$verba" --json --heuristic --patterns "$work/fr-patterns.json" \
+	./fixtures/mistranslator-fr.sh 2>&1)
+code=$?
+if [ "$code" -eq 0 ] && printf '%s' "$out" | grep -q 'mistranslation' &&
+	printf '%s' "$out" | grep -q '"heuristic": true'; then
+	pass "fr fixture: --patterns reads the French wording"
+else
+	bad "fr fixture with --patterns (exit $code):"
+	printf '%s\n' "$out"
+fi
+
+# --strict + --patterns: the heuristic finding counts (exit 1).
+out=$("$verba" --json --strict --patterns "$work/fr-patterns.json" \
+	./fixtures/mistranslator-fr.sh 2>&1)
+code=$?
+if [ "$code" -eq 1 ] && printf '%s' "$out" | grep -q 'mistranslation'; then
+	pass "fr fixture: --strict --patterns fails (exit 1)"
+else
+	bad "fr fixture --strict --patterns (exit $code):"
+	printf '%s\n' "$out"
+fi
+
+# A pattern file that cannot be read is a usage error.
+check_exit "--patterns with an unreadable file -> 2" 2 "$verba" \
+	--patterns ./fixtures/no-such-patterns-xyz.json echo hi
 
 # Human report (no --json) with a finding: faithless claim, exit 1.
 out=$("$verba" echo "Saved /no/such/verba/phantom.conf" 2>&1)

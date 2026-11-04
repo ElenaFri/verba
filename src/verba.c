@@ -13,6 +13,7 @@
 
 #include "model.h"
 #include "heuristic.h"
+#include "patterns.h"
 #include "reconcile.h"
 #include "report.h"
 #include "trace.h"
@@ -57,6 +58,9 @@ static void print_usage(FILE *out)
 		"exit code\n"
 		"      --strict         run the heuristics and count them toward "
 		"the exit code\n"
+		"      --patterns FILE   load extra errno<->phrase patterns from FILE (a\n"
+		"                       JSON array of {\"phrase\", \"errno\"} objects),\n"
+		"                       used by the mistranslation checks (repeatable)\n"
 		"\n"
 		"verba runs <command> under ptrace and reports contradictions between\n"
 		"what it prints and the file syscalls it actually makes:\n"
@@ -84,6 +88,8 @@ struct options {
 	int nallow;
 	int heuristic; /* run phase-2 checks, report them separately */
 	int strict;    /* run phase-2 checks and fail (exit 1) on them too */
+	char **patterns; /* --patterns files, loaded before the trace */
+	int npatterns;
 	int cmd_index; /* index of <command> in argv, or argc if none */
 };
 
@@ -150,6 +156,18 @@ static enum parse_result parse_args(int argc, char **argv, struct options *opt)
 			i += 2;
 			continue;
 		}
+		if (strcmp(arg, "--patterns") == 0) {
+			char *pf = option_arg(argc, argv, i, "a FILE argument");
+			if (!pf)
+				return PARSE_ERROR;
+			opt->patterns = xrealloc(
+				opt->patterns,
+				(size_t)(opt->npatterns + 1) *
+					sizeof(*opt->patterns));
+			opt->patterns[opt->npatterns++] = pf;
+			i += 2;
+			continue;
+		}
 		if (strcmp(arg, "--allow") == 0) {
 			char *pfx = option_arg(argc, argv, i, "a PREFIX argument");
 			if (!pfx)
@@ -179,10 +197,12 @@ int main(int argc, char **argv)
 	enum parse_result pr = parse_args(argc, argv, &opt);
 	if (pr == PARSE_DONE) {
 		free(opt.allow);
+		free(opt.patterns);
 		return EXIT_FAITHFUL;
 	}
 	if (pr == PARSE_ERROR) {
 		free(opt.allow);
+		free(opt.patterns);
 		return EXIT_ERROR;
 	}
 
@@ -190,10 +210,24 @@ int main(int argc, char **argv)
 		fprintf(stderr, "%s: no command given\n", progname);
 		hint_help();
 		free(opt.allow);
+		free(opt.patterns);
 		return EXIT_ERROR;
 	}
 
 	char **cmd = &argv[opt.cmd_index];
+
+	/* Load the pattern dictionaries up front: a bad file is a usage error,
+	 * best reported before the command runs. */
+	for (int i = 0; i < opt.npatterns; i++) {
+		char err[256];
+		if (patterns_load(opt.patterns[i], err, sizeof err) < 0) {
+			fprintf(stderr, "%s: %s\n", progname, err);
+			patterns_reset();
+			free(opt.allow);
+			free(opt.patterns);
+			return EXIT_ERROR;
+		}
+	}
 
 	struct audit au;
 	memset(&au, 0, sizeof au);
@@ -203,7 +237,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "%s: could not start tracing: %s\n", progname,
 		        strerror(errno));
 		audit_free(&au);
+		patterns_reset();
 		free(opt.allow);
+		free(opt.patterns);
 		return EXIT_ERROR;
 	}
 	/* LCOV_EXCL_STOP */
@@ -211,7 +247,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "%s: cannot run '%s': %s\n", progname, cmd[0],
 		        strerror(au.exec_errno));
 		audit_free(&au);
+		patterns_reset();
 		free(opt.allow);
+		free(opt.patterns);
 		return EXIT_ERROR;
 	}
 
@@ -227,7 +265,9 @@ int main(int argc, char **argv)
 			        opt.output, strerror(errno));
 			findings_free(&findings);
 			audit_free(&au);
+			patterns_reset();
 			free(opt.allow);
+			free(opt.patterns);
 			return EXIT_ERROR;
 		}
 		report_json(f, &au, &findings);
@@ -246,6 +286,8 @@ int main(int argc, char **argv)
 
 	findings_free(&findings);
 	audit_free(&au);
+	patterns_reset();
 	free(opt.allow);
+	free(opt.patterns);
 	return code;
 }

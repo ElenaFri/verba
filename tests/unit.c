@@ -383,6 +383,11 @@ static void test_patterns(void)
 	CHECK(errno_family(EACCES) == errno_family(EPERM));
 	CHECK(errno_family(ENOENT) != errno_family(EACCES));
 
+	/* reverse lookup: known name -> code, unknown -> 0. */
+	CHECK(errno_from_name("ENOENT") == ENOENT);
+	CHECK(errno_from_name("EACCES") == EACCES);
+	CHECK(errno_from_name("WAT") == 0);
+
 	int codes[8];
 	/* one phrase -> one code. */
 	CHECK(errno_phrases_in_line("error: no such file", codes, 8) == 1);
@@ -394,6 +399,172 @@ static void test_patterns(void)
 	                            8) == 2);
 	/* nothing recognisable -> zero. */
 	CHECK(errno_phrases_in_line("everything is fine here", codes, 8) == 0);
+}
+
+/* ---- patterns.c: the --patterns loader ---- */
+
+/* Write `content` into <dir>/<name>, load it, unlink it. Returns the
+ * patterns_load() result (-1 also on write failure). */
+static int load_json(const char *dir, const char *name, const char *content,
+                     char *err, size_t errn)
+{
+	char path[300];
+	snprintf(path, sizeof path, "%s/%s", dir, name);
+	FILE *f = fopen(path, "w");
+	if (!f)
+		return -1;
+	fputs(content, f);
+	int ok = (fclose(f) == 0);
+	int rc = ok ? patterns_load(path, err, errn) : -1;
+	unlink(path);
+	return rc;
+}
+
+static void test_patterns_load(void)
+{
+	char tmpl[] = "verba-ut-XXXXXX";
+	char *dir = mkdtemp(tmpl);
+	CHECK(dir != NULL);
+	if (!dir)
+		return;
+
+	char err[256];
+	char path[300];
+	int codes[8];
+
+	/* a valid kitchen-sink file: plain entries, \uXXXX escapes of 1/2/3-byte
+	 * codepoints in both hex cases, every short escape, a raw newline inside
+	 * a phrase (accepted superset), and a phrase long enough to grow the
+	 * string buffer. */
+	char zbuf[128];
+	memset(zbuf, 'z', 100);
+	zbuf[100] = '\0';
+	snprintf(path, sizeof path, "%s/ok.json", dir);
+	FILE *f = fopen(path, "w");
+	CHECK(f != NULL);
+	if (f) {
+		fputs("[\n", f);
+		fputs(" {\"phrase\": \"droits insuffisants\", \"errno\": \"EACCES\"},\n", f);
+		fputs(" {\"phrase\": \"l\\u00e9gende \\u20AC \\u0041 \\t\", \"errno\": \"EISDIR\"},\n", f);
+		fputs(" {\"phrase\": \"esc \\\"q\\\" \\\\ \\/ \\b \\f \\n \\r \\t end\", "
+		      "\"errno\": \"ELOOP\"},\n", f);
+		fputs(" {\"phrase\": \"a\nb\", \"errno\": \"EXDEV\"},\n", f);
+		fprintf(f, " {\"phrase\": \"%s\", \"errno\": \"ENOTDIR\"}\n", zbuf);
+		fputs("]\n", f);
+		fclose(f);
+		CHECK(patterns_load(path, err, sizeof err) == 0);
+		unlink(path);
+	}
+
+	/* the loaded entries are live, deduplicated by family against the
+	 * built-in table. */
+	CHECK(errno_phrases_in_line("erreur: droits insuffisants", codes,
+	                            8) == 1);
+	CHECK(errno_phrases_in_line("avant l\u00e9gende \u20AC A \t apres", codes,
+	                            8) == 1);
+	CHECK(errno_phrases_in_line(
+		"x esc \"q\" \\ / \b \f \n \r \t end y", codes, 8) == 1);
+	CHECK(errno_phrases_in_line("avant a\nb apres", codes, 8) == 1);
+	char zprobe[160];
+	snprintf(zprobe, sizeof zprobe, "avant %s apres", zbuf);
+	CHECK(errno_phrases_in_line(zprobe, codes, 8) == 1);
+	CHECK(errno_family(codes[0]) == errno_family(ENOTDIR));
+
+	/* more distinct families than the array capacity: the overflow is
+	 * dropped, not written out of bounds. */
+	CHECK(errno_phrases_in_line(
+		"no such file, permission denied, already exists, not a directory, "
+		"is a directory, no space left, read-only, too many open files, "
+		"file name too long, directory not empty", codes, 8) == 8);
+
+	/* a second file with a phrase overlapping a built-in one still yields a
+	 * single ENOENT code (same family). */
+	CHECK(load_json(dir, "fr.json",
+		"[{\"phrase\": \"fichier introuvable\", \"errno\": \"ENOENT\"}]",
+		err, sizeof err) == 0);
+	CHECK(errno_phrases_in_line("le fichier introuvable: not found", codes,
+	                            8) == 1);
+
+	/* an empty array loads fine and adds nothing. */
+	CHECK(load_json(dir, "empty.json", "[]", err, sizeof err) == 0);
+
+	/* whitespace (incl. newlines) between tokens. */
+	CHECK(load_json(dir, "ws.json",
+		"\n\t[\n { \"phrase\"\t:\t\"disk is full\" ,\n\"errno\" : \"ENOSPC\" }\n ]\n",
+		err, sizeof err) == 0);
+	CHECK(errno_phrases_in_line("oops: disk is full", codes, 8) == 1);
+
+	/* a file large enough to exercise the read-buffer growth. */
+	snprintf(path, sizeof path, "%s/big.json", dir);
+	f = fopen(path, "w");
+	CHECK(f != NULL);
+	if (f) {
+		fputc('[', f);
+		for (int i = 0; i < 250; i++)
+			fprintf(f, "%s{\"phrase\": \"pt numero %d\", \"errno\": \"ENOENT\"}",
+			        i ? "," : "", i);
+		fputs("]\n", f);
+		fclose(f);
+		CHECK(patterns_load(path, err, sizeof err) == 0);
+		unlink(path);
+		CHECK(errno_phrases_in_line("avant pt numero 249 apres", codes,
+		                        8) == 1);
+	}
+
+	/* every parser failure path: -1 with a non-empty diagnostic. */
+	const struct {
+		const char *name;
+		const char *content;
+	} bad[] = {
+		{ "not-array.json", "42" },
+		{ "empty-file.json", "" },
+		{ "not-string.json", "[\"s\"]" },
+		{ "not-object.json", "[{}]" },
+		{ "no-phrase.json", "[{\"errno\": \"ENOENT\"}]" },
+		{ "no-errno.json", "[{\"phrase\": \"x\"}]" },
+		{ "unknown-key.json", "[{\"autre\": \"x\"}]" },
+		{ "dup-phrase.json",
+		  "[{\"phrase\": \"a\", \"phrase\": \"b\", \"errno\": \"ENOENT\"}]" },
+		{ "dup-errno.json",
+		  "[{\"phrase\": \"a\", \"errno\": \"ENOENT\", \"errno\": \"ENOENT\"}]" },
+		{ "empty-phrase.json", "[{\"phrase\": \"\", \"errno\": \"ENOENT\"}]" },
+		{ "unknown-errno.json", "[{\"phrase\": \"x\", \"errno\": \"WAT\"}]" },
+		{ "no-colon.json", "[{\"phrase\" \"x\"}]" },
+		{ "no-value.json", "[{\"phrase\": x}]" },
+		{ "no-comma-obj.json",
+		  "[{\"phrase\": \"x\" \"errno\": \"ENOENT\"}]" },
+		{ "no-comma-arr.json",
+		  "[{\"phrase\": \"x\", \"errno\": \"ENOENT\"} {\"phrase\": \"y\", \"errno\": \"ENOENT\"}]" },
+		{ "no-bracket.json", "[{\"phrase\": \"x\", \"errno\": \"ENOENT\"}" },
+		{ "trailing-comma.json", "[{\"phrase\": \"x\", \"errno\": \"ENOENT\"}," },
+		{ "unterminated-key.json", "[{\"abc" },
+		{ "unterminated.json", "[{\"phrase\": \"abc" },
+		{ "escape-eof.json", "[{\"phrase\": \"abc\\" },
+		{ "bad-escape.json", "[{\"phrase\": \"a\\qb\", \"errno\": \"ENOENT\"}]" },
+		{ "bad-hex.json", "[{\"phrase\": \"\\u00g0\", \"errno\": \"ENOENT\"}]" },
+		{ "surrogate.json", "[{\"phrase\": \"\\ud800\", \"errno\": \"ENOENT\"}]" },
+		{ "trailing-data.json", "[] junk" },
+	};
+	for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+		err[0] = '\0';
+		CHECK(load_json(dir, bad[i].name, bad[i].content, err,
+		                sizeof err) == -1);
+		CHECK(err[0] != '\0');
+	}
+
+	/* a file that does not exist. */
+	err[0] = '\0';
+	snprintf(path, sizeof path, "%s/nope.json", dir);
+	CHECK(patterns_load(path, err, sizeof err) == -1);
+	CHECK(err[0] != '\0');
+
+	/* reading a directory fails cleanly (ferror path). */
+	err[0] = '\0';
+	CHECK(patterns_load(dir, err, sizeof err) == -1);
+	CHECK(err[0] != '\0');
+
+	patterns_reset();
+	rmdir(dir);
 }
 
 /* ---- heuristic.c ---- */
@@ -676,6 +847,7 @@ int main(void)
 	test_extract_paths();
 	test_model_names();
 	test_patterns();
+	test_patterns_load();
 	test_heuristic();
 	test_reconcile_faithless();
 	test_reconcile_undeclared_and_whitelist();
