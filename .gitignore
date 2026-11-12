@@ -58,6 +58,7 @@ dkms.conf
 /verba
 /tests/unit
 /tests/syscall_zoo
+/tests/bench_workload
 
 # coverage artifacts
 *.gcda

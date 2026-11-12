@@ -164,13 +164,21 @@ classes with their evidence lines, and the README's table is real.
   (`posix_openpt`/`grantpt`/`unlockpt`), stdout and stderr arrive as one
   combined stream tagged `tty` in JSON; EOF on the master (EIO) replaces the
   pipes' EOF. The deferred caveat from phase 1.2 is closed.
-- [ ] `--follow PID` (attach) — stretch goal, changes the threat model of the audit.
 - [x] Shell-completion (bash + zsh), man page complete, Debian packaging.
   `make install` lays down the binary, man page and completion scripts; the
   bash/zsh completers live in `completions/`, and a minimal `debian/` dir wraps
   the same Makefile.
-- [ ] Performance: trace enter-only where exit data is not needed;
-  benchmark against `strace -f -e trace=%file`.
+- [x] Performance: benchmark against `strace -f -e trace=%file` (`make bench`,
+  `tests/bench.sh` + `tests/bench_workload.c`). On a syscall-heavy workload
+  verba runs ≈ 90× bare and strace ≈ 70×: both stop on *every* syscall the
+  tracee makes, so overhead scales with total syscall count, not just the file
+  ops. **Finding:** the "trace enter-only where exit data is not needed" idea
+  does not apply — every watched syscall needs its exit (result fd / errno), so
+  there is nothing to skip. The real win would be a seccomp-BPF prefilter so the
+  kernel only stops on the ~15 watched syscalls; it is left opt-in future work
+  because it requires `PR_SET_NO_NEW_PRIVS`, which neutralises the setuid
+  elevation verba otherwise preserves (see the guiding constraints).
+- [ ] `--follow PID` (attach) — stretch goal, changes the threat model of the audit.
 
 ---
 
@@ -179,7 +187,8 @@ valgrind-clean — verba traces a command and reports the three anomaly classes,
 with the test suite at ≈ 99.9% line coverage. Phase 2 (opt-in, heuristic
 mistranslation auditing: errno vs. claim, behind `--heuristic`/`--strict`)
 complete — built-in errno↔phrase dictionary plus a user-extensible JSON one
-(`--patterns FILE`). Phase 3 under way: pty capture (`--tty`) and packaging
-(bash/zsh completion, man page, Debian package) are done; next: performance
-(enter-only tracing, benchmark vs strace), `--follow`. This file is updated
-before each release.*
+(`--patterns FILE`). Phase 3 under way: pty capture (`--tty`), packaging
+(bash/zsh completion, man page, Debian package) and the strace benchmark
+(`make bench`) are done; the only Phase 3 item left is the `--follow PID`
+attach stretch goal (a seccomp-BPF speedup is noted as opt-in future work).
+This file is updated before each release.*

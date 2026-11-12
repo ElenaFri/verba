@@ -33,7 +33,7 @@ TESTBINS := tests/unit tests/syscall_zoo
 # verba), not a subject of measurement.
 ZOO_CFLAGS := $(CSTD) $(WARN) -O0 -g
 
-.PHONY: all test coverage coverage-html clean install uninstall
+.PHONY: all test coverage coverage-html clean install uninstall bench
 
 all: $(BIN)
 
@@ -48,6 +48,16 @@ tests/unit: tests/unit.c $(UNIT_OBJ)
 
 tests/syscall_zoo: tests/syscall_zoo.c
 	$(CC) $(CPPFLAGS) $(ZOO_CFLAGS) -o $@ $<
+
+# The benchmark workload is a tracing subject, not a measured object: build it
+# optimised and uninstrumented, like the syscall zoo.
+tests/bench_workload: tests/bench_workload.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $<
+
+# Time the workload bare, under verba, and under strace. Not part of `test`:
+# it measures wall-clock and needs a quiet machine to mean anything.
+bench: $(BIN) tests/bench_workload
+	sh tests/bench.sh ./$(BIN)
 
 test: $(BIN) $(TESTBINS)
 	# The static fixture needs a static libc; the leading '-' tolerates
@@ -87,6 +97,6 @@ uninstall:
 	rm -f $(DESTDIR)$(ZSHCOMPDIR)/_verba
 
 clean:
-	rm -f $(BIN) $(OBJ) $(TESTBINS) tests/static-liar
+	rm -f $(BIN) $(OBJ) $(TESTBINS) tests/static-liar tests/bench_workload
 	rm -f src/*.gcda src/*.gcno tests/*.gcda tests/*.gcno coverage.info
 	rm -rf coverage

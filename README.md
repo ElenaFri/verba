@@ -120,6 +120,7 @@ make           # build ./verba
 make test      # unit tests + CLI smoke tests + the self-test fixture corpus
 make install   # install to $PREFIX (default /usr/local)
 make coverage  # local line-coverage report (lcov; coverage-html for HTML)
+make bench     # time the tracing overhead against strace (needs strace)
 ```
 
 `make install` also lays down the man page and the bash/zsh completion scripts
