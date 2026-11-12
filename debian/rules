@@ -1,0 +1,11 @@
+#!/usr/bin/make -f
+# debian/rules for verba — a thin wrapper over the upstream Makefile.
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) VERSION=$(DEB_VERSION_UPSTREAM)
+
+override_dh_auto_install:
+	$(MAKE) PREFIX=/usr DESTDIR=$(CURDIR)/debian/verba install

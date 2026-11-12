@@ -165,7 +165,10 @@ classes with their evidence lines, and the README's table is real.
   combined stream tagged `tty` in JSON; EOF on the master (EIO) replaces the
   pipes' EOF. The deferred caveat from phase 1.2 is closed.
 - [ ] `--follow PID` (attach) — stretch goal, changes the threat model of the audit.
-- [ ] Shell-completion, man page complete, packaging (deb, AUR).
+- [x] Shell-completion (bash + zsh), man page complete, Debian packaging.
+  `make install` lays down the binary, man page and completion scripts; the
+  bash/zsh completers live in `completions/`, and a minimal `debian/` dir wraps
+  the same Makefile.
 - [ ] Performance: trace enter-only where exit data is not needed;
   benchmark against `strace -f -e trace=%file`.
 
@@ -176,6 +179,7 @@ valgrind-clean — verba traces a command and reports the three anomaly classes,
 with the test suite at ≈ 99.9% line coverage. Phase 2 (opt-in, heuristic
 mistranslation auditing: errno vs. claim, behind `--heuristic`/`--strict`)
 complete — built-in errno↔phrase dictionary plus a user-extensible JSON one
-(`--patterns FILE`). Phase 3 under way: pty capture (`--tty`) is done; next:
-performance (enter-only tracing, benchmark vs strace), packaging, `--follow`.
-This file is updated before each release.*
+(`--patterns FILE`). Phase 3 under way: pty capture (`--tty`) and packaging
+(bash/zsh completion, man page, Debian package) are done; next: performance
+(enter-only tracing, benchmark vs strace), `--follow`. This file is updated
+before each release.*

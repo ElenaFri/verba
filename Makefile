@@ -16,6 +16,8 @@ COVFLAGS := $(CSTD) $(WARN) -O0 -g --coverage
 PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 MANDIR := $(PREFIX)/share/man/man1
+BASHCOMPDIR := $(PREFIX)/share/bash-completion/completions
+ZSHCOMPDIR  := $(PREFIX)/share/zsh/site-functions
 
 BIN := verba
 SRC := $(wildcard src/*.c)
@@ -73,10 +75,16 @@ install: $(BIN)
 	install -m 0755 $(BIN) $(DESTDIR)$(BINDIR)/$(BIN)
 	install -d $(DESTDIR)$(MANDIR)
 	install -m 0644 man/verba.1 $(DESTDIR)$(MANDIR)/verba.1
+	install -d $(DESTDIR)$(BASHCOMPDIR)
+	install -m 0644 completions/verba.bash $(DESTDIR)$(BASHCOMPDIR)/$(BIN)
+	install -d $(DESTDIR)$(ZSHCOMPDIR)
+	install -m 0644 completions/_verba $(DESTDIR)$(ZSHCOMPDIR)/_verba
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(BIN)
 	rm -f $(DESTDIR)$(MANDIR)/verba.1
+	rm -f $(DESTDIR)$(BASHCOMPDIR)/$(BIN)
+	rm -f $(DESTDIR)$(ZSHCOMPDIR)/_verba
 
 clean:
 	rm -f $(BIN) $(OBJ) $(TESTBINS) tests/static-liar

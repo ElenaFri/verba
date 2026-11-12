@@ -1,0 +1,19 @@
+Source: verba
+Section: devel
+Priority: optional
+Maintainer: Elena Frison <elena@example.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/ElenaFri/verba
+Rules-Requires-Root: no
+
+Package: verba
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: audit what a command says against what it does
+ verba runs a command under ptrace and audits what it says against what it
+ does: it watches stdout/stderr and the exit code on one side and the real
+ file syscalls on the other, then reports every contradiction between the two.
+ .
+ It is pure C with no runtime dependencies, traces via ptrace (not LD_PRELOAD)
+ so static and setuid binaries are in scope, and targets x86-64.

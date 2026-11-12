@@ -71,3 +71,12 @@ coverage.info
 .vg/
 .vg-test/
 out.txt
+
+# packaging build artifacts
+/debian/verba/
+/debian/.debhelper/
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper.log
+/debian/debhelper-build-stamp
+/_pkgtest/

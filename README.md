@@ -122,6 +122,10 @@ make install   # install to $PREFIX (default /usr/local)
 make coverage  # local line-coverage report (lcov; coverage-html for HTML)
 ```
 
+`make install` also lays down the man page and the bash/zsh completion scripts
+under `$PREFIX`. A minimal `debian/` dir wraps the same Makefile for Debian
+packaging (`dpkg-buildpackage`).
+
 ## Status
 
 See [`TODO.md`](TODO.md) for the roadmap.
