@@ -39,7 +39,7 @@ int main(int argc, char **argv)
 
 		if (i % FILE_EVERY == 0) {
 			snprintf(path, sizeof(path), "%s/bench-%ld.tmp", dir, i);
-			int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 			if (fd >= 0) {
 				(void)!write(fd, "x", 1);
 				close(fd);

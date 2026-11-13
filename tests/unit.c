@@ -314,7 +314,8 @@ static void test_reconcile_undeclared_and_whitelist(void)
 	push_evt(&au2, ACT_UNLINK, "/no/such/verba/gone", NULL, 0, "unlink");
 	struct vec f2 = {0};
 	/* --allow suppresses the unlink under the given prefix. */
-	char *allow[] = {(char *)"/no/such/verba/gone"};
+	char allow0[] = "/no/such/verba/gone";
+	char *allow[] = {allow0};
 	reconcile(&au2, &f2, allow, 1);
 	CHECK(!has_finding(&f2, F_UNDECLARED_WRITE));
 	findings_free(&f2);
@@ -770,7 +771,9 @@ static void test_report_json(void)
 	struct audit au = {0};
 	au.exited = 1;
 	au.exit_code = 0;
-	static char *argv[] = {(char *)"cmd", (char *)"arg", NULL};
+	static char cmd0[] = "cmd";
+	static char arg0[] = "arg";
+	static char *argv[] = {cmd0, arg0, NULL};
 	au.argv = argv;
 	push_line(&au, 1, "on stdout");
 	push_line(&au, 2, "on stderr");

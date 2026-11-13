@@ -23,6 +23,12 @@ jobs:
       - name: Build
         run: make CC=${{ matrix.cc }}
 
+      # The attach test (--follow) seizes a sibling process; that needs classic
+      # (non-descendant) ptrace, which Ubuntu runners disable by default
+      # (Yama ptrace_scope=1). Relax it so the test runs instead of being skipped.
+      - name: Allow non-descendant ptrace
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0 || true
+
       - name: Test
         run: make test CC=${{ matrix.cc }}
 
@@ -52,6 +58,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential lcov
+
+      # Coverage includes the attach test, which seizes a sibling process; relax
+      # Yama's ptrace_scope so that path is measured rather than skipped.
+      - name: Allow non-descendant ptrace
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0 || true
 
       - name: Generate coverage
         run: make coverage

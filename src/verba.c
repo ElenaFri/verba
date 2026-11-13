@@ -53,6 +53,9 @@ static void print_usage(FILE *out)
 		"      --tty            run the command on a pty (stdout and stderr are\n"
 		"                       then captured as one combined stream) — for\n"
 		"                       programs that change what they say off-terminal\n"
+		"      --follow PID     attach to an already running process instead of\n"
+		"                       launching a command; its output is read from the\n"
+		"                       write(2) calls it makes to stdout and stderr\n"
 		"      --allow PREFIX   treat writes under PREFIX as declared "
 		"(repeatable)\n"
 		"      --heuristic      also run phase-2 mistranslation checks "
@@ -87,6 +90,7 @@ static void hint_help(void)
 struct options {
 	int json;
 	int tty; /* capture through a pty instead of pipes */
+	pid_t follow; /* attach to this PID instead of launching a command */
 	const char *output;
 	char **allow;
 	int nallow;
@@ -120,82 +124,141 @@ static int opt_is(const char *arg, const char *short_opt, const char *long_opt)
 	return strcmp(arg, short_opt) == 0 || strcmp(arg, long_opt) == 0;
 }
 
+/* Append one element to a dynamically grown argv-style vector. */
+static void append_str(char ***vec, int *n, char *s)
+{
+	*vec = xrealloc(*vec, (size_t)(*n + 1) * sizeof(**vec));
+	(*vec)[(*n)++] = s;
+}
+
+/* Parse the --follow argument at argv[*i + 1] as a positive PID. On success
+ * stores it, advances *i past both words and returns 0; on error returns -1
+ * after a diagnostic. */
+static int parse_follow(int argc, char **argv, int *i, struct options *opt)
+{
+	const char *pa = option_arg(argc, argv, *i, "a PID argument");
+	if (!pa)
+		return -1;
+	errno = 0;
+	char *end;
+	long v = strtol(pa, &end, 10);
+	if (errno || end == pa || *end != '\0' || v <= 0) {
+		fprintf(stderr, "%s: --follow needs a positive PID\n", progname);
+		hint_help();
+		return -1;
+	}
+	opt->follow = (pid_t)v;
+	*i += 2;
+	return 0;
+}
+
+enum opt_status {
+	OPT_CONSUMED, /* option handled; keep scanning */
+	OPT_ENDOPTS,  /* "--" seen; the command begins next */
+	OPT_DONE,     /* --help/--version handled; exit successfully */
+	OPT_ERROR,    /* usage error already reported */
+};
+
+/* Handle the single option at argv[*i], advancing *i past it (and its value). */
+static enum opt_status parse_one(int argc, char **argv, int *i,
+                                 struct options *opt)
+{
+	const char *arg = argv[*i];
+
+	if (strcmp(arg, "--") == 0) {
+		(*i)++;
+		return OPT_ENDOPTS;
+	}
+	if (opt_is(arg, "-h", "--help")) {
+		print_usage(stdout);
+		return OPT_DONE;
+	}
+	if (opt_is(arg, "-V", "--version")) {
+		print_version();
+		return OPT_DONE;
+	}
+	if (strcmp(arg, "--json") == 0) {
+		opt->json = 1;
+		(*i)++;
+		return OPT_CONSUMED;
+	}
+	if (strcmp(arg, "--tty") == 0) {
+		opt->tty = 1;
+		(*i)++;
+		return OPT_CONSUMED;
+	}
+	if (strcmp(arg, "--follow") == 0)
+		return parse_follow(argc, argv, i, opt) < 0 ? OPT_ERROR
+		                                             : OPT_CONSUMED;
+	if (strcmp(arg, "--heuristic") == 0) {
+		opt->heuristic = 1;
+		(*i)++;
+		return OPT_CONSUMED;
+	}
+	if (strcmp(arg, "--strict") == 0) {
+		opt->strict = 1;
+		(*i)++;
+		return OPT_CONSUMED;
+	}
+	if (opt_is(arg, "-o", "--output")) {
+		opt->output = option_arg(argc, argv, *i, "a FILE argument");
+		if (!opt->output)
+			return OPT_ERROR;
+		*i += 2;
+		return OPT_CONSUMED;
+	}
+	if (strcmp(arg, "--patterns") == 0) {
+		char *pf = option_arg(argc, argv, *i, "a FILE argument");
+		if (!pf)
+			return OPT_ERROR;
+		append_str(&opt->patterns, &opt->npatterns, pf);
+		*i += 2;
+		return OPT_CONSUMED;
+	}
+	if (strcmp(arg, "--allow") == 0) {
+		char *pfx = option_arg(argc, argv, *i, "a PREFIX argument");
+		if (!pfx)
+			return OPT_ERROR;
+		append_str(&opt->allow, &opt->nallow, pfx);
+		*i += 2;
+		return OPT_CONSUMED;
+	}
+
+	fprintf(stderr, "%s: unknown option '%s'\n", progname, arg);
+	hint_help();
+	return OPT_ERROR;
+}
+
 static enum parse_result parse_args(int argc, char **argv, struct options *opt)
 {
 	int i = 1;
 	while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
-		const char *arg = argv[i];
-
-		if (strcmp(arg, "--") == 0) {
-			i++;
+		enum opt_status st = parse_one(argc, argv, &i, opt);
+		if (st == OPT_ENDOPTS)
 			break;
-		}
-		if (opt_is(arg, "-h", "--help")) {
-			print_usage(stdout);
+		if (st == OPT_DONE)
 			return PARSE_DONE;
-		}
-		if (opt_is(arg, "-V", "--version")) {
-			print_version();
-			return PARSE_DONE;
-		}
-		if (strcmp(arg, "--json") == 0) {
-			opt->json = 1;
-			i++;
-			continue;
-		}
-		if (strcmp(arg, "--tty") == 0) {
-			opt->tty = 1;
-			i++;
-			continue;
-		}
-		if (strcmp(arg, "--heuristic") == 0) {
-			opt->heuristic = 1;
-			i++;
-			continue;
-		}
-		if (strcmp(arg, "--strict") == 0) {
-			opt->strict = 1;
-			i++;
-			continue;
-		}
-		if (opt_is(arg, "-o", "--output")) {
-			opt->output = option_arg(argc, argv, i, "a FILE argument");
-			if (!opt->output)
-				return PARSE_ERROR;
-			i += 2;
-			continue;
-		}
-		if (strcmp(arg, "--patterns") == 0) {
-			char *pf = option_arg(argc, argv, i, "a FILE argument");
-			if (!pf)
-				return PARSE_ERROR;
-			opt->patterns = xrealloc(
-				opt->patterns,
-				(size_t)(opt->npatterns + 1) *
-					sizeof(*opt->patterns));
-			opt->patterns[opt->npatterns++] = pf;
-			i += 2;
-			continue;
-		}
-		if (strcmp(arg, "--allow") == 0) {
-			char *pfx = option_arg(argc, argv, i, "a PREFIX argument");
-			if (!pfx)
-				return PARSE_ERROR;
-			opt->allow = xrealloc(
-				opt->allow,
-				(size_t)(opt->nallow + 1) * sizeof(*opt->allow));
-			opt->allow[opt->nallow++] = pfx;
-			i += 2;
-			continue;
-		}
-
-		fprintf(stderr, "%s: unknown option '%s'\n", progname, arg);
-		hint_help();
-		return PARSE_ERROR;
+		if (st == OPT_ERROR)
+			return PARSE_ERROR;
 	}
 
 	opt->cmd_index = i;
 	return PARSE_RUN;
+}
+
+/* Validate the parsed option/command combination. Returns a message (for
+ * stderr), or NULL when the run may proceed. */
+static const char *bad_combo(const struct options *opt, int argc)
+{
+	if (opt->cmd_index >= argc) {
+		if (!opt->follow)
+			return "no command given";
+	} else if (opt->follow) {
+		return "--follow does not take a command";
+	}
+	if (opt->follow && opt->tty)
+		return "--follow cannot be combined with --tty";
+	return NULL;
 }
 
 int main(int argc, char **argv)
@@ -215,8 +278,9 @@ int main(int argc, char **argv)
 		return EXIT_ERROR;
 	}
 
-	if (opt.cmd_index >= argc) {
-		fprintf(stderr, "%s: no command given\n", progname);
+	const char *combo_err = bad_combo(&opt, argc);
+	if (combo_err) {
+		fprintf(stderr, "%s: %s\n", progname, combo_err);
 		hint_help();
 		free(opt.allow);
 		free(opt.patterns);
@@ -241,17 +305,21 @@ int main(int argc, char **argv)
 	struct audit au;
 	memset(&au, 0, sizeof au);
 
-	/* LCOV_EXCL_START: only on pipe/signalfd/fork/pty failure inside trace_run. */
-	if (trace_run(cmd, &au, opt.tty) < 0) {
-		fprintf(stderr, "%s: could not start tracing: %s\n", progname,
-		        strerror(errno));
+	if (trace_run(cmd, &au, opt.tty, opt.follow) < 0) {
+		if (opt.follow)
+			fprintf(stderr, "%s: cannot attach to pid %ld: %s\n",
+			        progname, (long)opt.follow, strerror(errno));
+		else
+			/* LCOV_EXCL_START: launch-path internal failure is defensive. */
+			fprintf(stderr, "%s: could not start tracing: %s\n",
+			        progname, strerror(errno));
+			/* LCOV_EXCL_STOP */
 		audit_free(&au);
 		patterns_reset();
 		free(opt.allow);
 		free(opt.patterns);
 		return EXIT_ERROR;
 	}
-	/* LCOV_EXCL_STOP */
 	if (au.exec_failed) {
 		fprintf(stderr, "%s: cannot run '%s': %s\n", progname, cmd[0],
 		        strerror(au.exec_errno));
@@ -260,6 +328,14 @@ int main(int argc, char **argv)
 		free(opt.allow);
 		free(opt.patterns);
 		return EXIT_ERROR;
+	}
+
+	/* Attach mode has no argv to report; label the audit with the PID. */
+	char pidlabel[32];
+	char *attach_argv[2] = {pidlabel, NULL};
+	if (opt.follow) {
+		snprintf(pidlabel, sizeof pidlabel, "pid:%ld", (long)opt.follow);
+		au.argv = attach_argv;
 	}
 
 	struct vec findings = {0};

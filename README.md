@@ -34,6 +34,11 @@ Some programs change what they say when stdout is not a terminal; `--tty`
 captures them through a pty, at the price of one combined stream (`"tty"` in
 JSON).
 
+`--follow PID` audits a process that is already running: verba attaches to it
+(`PTRACE_SEIZE`) and reconstructs its words from the `write(2)` calls it makes to
+stdout and stderr. Only the target and the descendants it spawns after
+attachment are followed, and it is left running when verba exits.
+
 ## Usage
 
 ```sh
@@ -47,6 +52,8 @@ verba [options] <command> [args...]
       --tty           run the command on a pty (stdout and stderr are then
                      captured as one combined stream) — for programs that
                      change what they say off-terminal
+      --follow PID    attach to an already running process instead of launching
+                     a command; its output is read from its write(2) calls
       --heuristic    also run the mistranslation checks (errno vs. claim),
                      reported in a separate block; does not affect the exit code
       --strict       run the heuristics and count them toward the exit code

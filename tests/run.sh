@@ -40,6 +40,14 @@ check_exit "unrunnable command -> 2"  2 "$verba" ./fixtures/does-not-exist-xyz
 check_exit "--tty with an unrunnable command -> 2" 2 "$verba" \
 	--tty ./fixtures/does-not-exist-xyz
 
+# --follow: argument validation and the attach-vs-launch mutual exclusions.
+check_exit "--follow requires an argument -> 2" 2 "$verba" --follow
+check_exit "--follow with a non-numeric PID -> 2" 2 "$verba" --follow abc
+check_exit "--follow with a non-positive PID -> 2" 2 "$verba" --follow 0
+check_exit "--follow a dead PID -> 2" 2 "$verba" --follow 2147483646
+check_exit "--follow with a command -> 2" 2 "$verba" --follow 1 echo hi
+check_exit "--follow with --tty -> 2" 2 "$verba" --tty --follow 1
+
 # Option parsing: missing arguments, the -- separator, and a bad output path.
 check_exit "-o requires an argument -> 2"      2 "$verba" -o
 check_exit "--allow requires an argument -> 2" 2 "$verba" --allow
@@ -189,6 +197,69 @@ else
 	bad "crasher fixture exit (want 1, got $code)"
 fi
 check_findings "crasher: signal + success text -> discourse mismatch" 'discourse_mismatch -' "$out"
+
+# --- attach mode (--follow) ---
+# verba can audit an already running process: it attaches with PTRACE_SEIZE and
+# reconstructs the "words" from the write(2) calls the process makes to fd 1/2.
+# The target blocks on a FIFO until we have attached (confirmed via
+# /proc/PID/status TracerPid), then makes a faithless claim.
+#
+# Seizing a *sibling* (non-descendant, same uid) only succeeds when Yama's
+# ptrace_scope is 0 (classic ptrace) or Yama is absent. On a hardened box
+# (ptrace_scope >= 1) the seize returns EPERM and verba exits 2, so skip the
+# test there rather than fail it. CI sets ptrace_scope=0 so the path still runs.
+ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)
+attach_fifo="$work/attach.fifo"
+if [ "$ptrace_scope" = "0" ] && command -v mkfifo >/dev/null 2>&1 &&
+	mkfifo "$attach_fifo" 2>/dev/null && [ -r /proc/self/status ]; then
+	attach_pidfile="$work/attach.pid"
+	attach_target="$work/attach-claimed.conf"
+	: > "$attach_pidfile"
+	# The target's own stdout goes to /dev/null; verba still sees the bytes
+	# through the write(2) it intercepts.
+	sh ./fixtures/attach-liar.sh "$attach_pidfile" "$attach_fifo" \
+		"$attach_target" >/dev/null 2>&1 &
+	tgt=$!
+
+	i=0
+	while [ ! -s "$attach_pidfile" ] && [ "$i" -lt 200 ]; do
+		sleep 0.02
+		i=$((i + 1))
+	done
+	tpid=$(cat "$attach_pidfile" 2>/dev/null)
+
+	if [ -n "$tpid" ]; then
+		"$verba" --json --follow "$tpid" > "$work/attach.json" 2>/dev/null &
+		vb=$!
+		# Wait until the kernel reports verba as the target's tracer.
+		i=0
+		while [ "$i" -lt 300 ]; do
+			tr=$(awk '/^TracerPid:/{print $2}' \
+				"/proc/$tpid/status" 2>/dev/null)
+			[ "$tr" = "$vb" ] && break
+			sleep 0.02
+			i=$((i + 1))
+		done
+		echo go > "$attach_fifo"
+		wait "$vb"
+		code=$?
+		wait "$tgt" 2>/dev/null
+		out=$(cat "$work/attach.json" 2>/dev/null)
+		if [ "$code" -eq 1 ]; then
+			pass "attach (--follow) exits 1 on a faithless claim"
+		else
+			bad "attach exit (want 1, got $code)"
+		fi
+		check_findings "attach reconstructs output and flags the claim" \
+			"faithless_claim WORK/attach-claimed.conf" "$out"
+	else
+		echo go > "$attach_fifo" 2>/dev/null
+		wait "$tgt" 2>/dev/null
+		bad "attach target did not announce its pid"
+	fi
+else
+	printf 'skip: attach test needs ptrace_scope=0 and mkfifo/proc\n'
+fi
 
 # mistranslator: a heuristic finding only (errno vs. claim).
 # Default: heuristics off -> faithful, exit 0, no findings at all.

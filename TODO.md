@@ -178,7 +178,13 @@ classes with their evidence lines, and the README's table is real.
   kernel only stops on the ~15 watched syscalls; it is left opt-in future work
   because it requires `PR_SET_NO_NEW_PRIVS`, which neutralises the setuid
   elevation verba otherwise preserves (see the guiding constraints).
-- [ ] `--follow PID` (attach) — stretch goal, changes the threat model of the audit.
+- [x] `--follow PID` (attach) — audit an already running process instead of
+  launching one. verba attaches with `PTRACE_SEIZE`/`PTRACE_INTERRUPT` and, since
+  the process's stdio cannot be redirected after the fact, reconstructs its words
+  from the `write(2)` calls it makes to fds 1 and 2. `EXITKILL` is deliberately
+  not set (the process is not ours and survives verba exiting); only the target
+  and the descendants it spawns after attachment are followed. Mutually
+  exclusive with a command and with `--tty`.
 
 ---
 
@@ -187,8 +193,8 @@ valgrind-clean — verba traces a command and reports the three anomaly classes,
 with the test suite at ≈ 99.9% line coverage. Phase 2 (opt-in, heuristic
 mistranslation auditing: errno vs. claim, behind `--heuristic`/`--strict`)
 complete — built-in errno↔phrase dictionary plus a user-extensible JSON one
-(`--patterns FILE`). Phase 3 under way: pty capture (`--tty`), packaging
-(bash/zsh completion, man page, Debian package) and the strace benchmark
-(`make bench`) are done; the only Phase 3 item left is the `--follow PID`
-attach stretch goal (a seccomp-BPF speedup is noted as opt-in future work).
+(`--patterns FILE`). Phase 3 complete: pty capture (`--tty`), packaging
+(bash/zsh completion, man page, Debian package), the strace benchmark
+(`make bench`) and attach mode (`--follow PID`). The one deferred, opt-in idea
+is a seccomp-BPF prefilter to speed tracing up (it trades away setuid support).
 This file is updated before each release.*

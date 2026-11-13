@@ -36,6 +36,16 @@
 #define PTRACE_SYSCALL_INFO_EXIT 2
 #endif
 
+/* PTRACE_SEIZE/INTERRUPT (Linux 3.4+) attach to an already running process
+ * without the SIGSTOP race of PTRACE_ATTACH, and let us set trace options at
+ * attach time. Defined defensively for toolchains with older headers. */
+#ifndef PTRACE_SEIZE
+#define PTRACE_SEIZE 0x4206
+#endif
+#ifndef PTRACE_INTERRUPT
+#define PTRACE_INTERRUPT 0x4207
+#endif
+
 #define STR_MAX 4096 /* cap on a single path read from the tracee */
 
 /* ---- per-tracee and per-fd bookkeeping ---- */
@@ -67,6 +77,7 @@ struct linebuf {
 struct tctx {
 	struct audit *au;
 	pid_t child;
+	int attach;         /* attached to a running process; capture fd 1/2 */
 	unsigned long order;
 	struct vec tracees; /* each item: one tracee */
 	struct vec openfds; /* each item: one openfd */
@@ -188,6 +199,26 @@ static char *read_string(pid_t pid, unsigned long addr)
 	}
 	buf[len] = '\0';
 	return buf;
+}
+
+/* Read up to `max` raw bytes from the tracee's address space (unlike
+ * read_string, no NUL handling). Returns how many were read. Used to
+ * reconstruct an attached process's output from its write(2) buffers. */
+static size_t read_bytes(pid_t pid, unsigned long addr, char *out, size_t max)
+{
+	size_t got = 0;
+	while (got < max) {
+		errno = 0;
+		long word = ptrace(PTRACE_PEEKDATA, pid, (void *)(addr + got), 0);
+		if (word == -1 && errno)
+			break; /* LCOV_EXCL_LINE: a live write buffer reads back */
+		size_t chunk = sizeof(long);
+		if (chunk > max - got)
+			chunk = max - got;
+		memcpy(out + got, &word, chunk);
+		got += chunk;
+	}
+	return got;
 }
 
 static char *base_dir(pid_t pid, int dirfd)
@@ -322,6 +353,26 @@ static void lb_flush(struct tctx *c, struct linebuf *lb, int stream)
 	if (lb->len > 0)
 		emit_line(c->au, &c->order, stream, lb->buf, lb->len);
 	lb->len = 0;
+}
+
+/* Feed bytes an attached tracee just wrote to fd 1/2 into the line buffers, so
+ * its output is audited exactly like a launched child's piped output. */
+static void capture_write(struct tctx *c, pid_t pid, unsigned long addr,
+                          size_t len, int stream)
+{
+	struct linebuf *lb = (stream == 2) ? &c->lb_err : &c->lb_out;
+	char buf[4096];
+	size_t off = 0;
+	while (off < len) {
+		size_t want = len - off;
+		if (want > sizeof buf)
+			want = sizeof buf;
+		size_t got = read_bytes(pid, addr + off, buf, want);
+		if (got == 0)
+			break; /* LCOV_EXCL_LINE: a live buffer yields its bytes */
+		lb_feed(c, lb, stream, buf, got);
+		off += got;
+	}
 }
 
 /* ---- syscall handling ---- */
@@ -460,6 +511,12 @@ static void do_fd_exit(struct tctx *c, const struct tracee *t, pid_t pid,
 	switch (t->nr) {
 #ifdef SYS_write
 	case SYS_write:
+		/* Attached: fds 1 and 2 still carry the process's own stdout and
+		 * stderr, so reconstruct the "words" from what it writes there. */
+		if (c->attach && (t->args[0] == 1 || t->args[0] == 2) &&
+		    err == 0 && ret > 0)
+			capture_write(c, pid, t->args[1], (size_t)ret,
+		                      t->args[0] == 2 ? 2 : 1);
 		if (err == 0 && ret > 0) {
 			struct openfd *o = of_find(c, pid, (int)t->args[0]);
 			if (o && !o->written) {
@@ -766,6 +823,16 @@ static void reap_children(struct tctx *c, int sfd)
 		handle_wait(c, w, ws);
 }
 
+/* Register fd in the poll set when `open`; returns its slot index, or -1. */
+static int poll_add(struct pollfd *pfd, int *n, int fd, int open)
+{
+	if (!open)
+		return -1;
+	pfd[*n].fd = fd;
+	pfd[*n].events = POLLIN;
+	return (*n)++;
+}
+
 /* Pump tracee stops and child output until both run dry. In tty mode there is
  * a single capture fd (the pty master) and one combined stream. */
 static void event_loop(struct tctx *c, int sfd, int outfd, int errfd, int tty)
@@ -781,25 +848,9 @@ static void event_loop(struct tctx *c, int sfd, int outfd, int errfd, int tty)
 	while (c->tracees.len > 0 || out_open || err_open) {
 		struct pollfd pfd[3];
 		int n = 0;
-		int isig = -1;
-		int iout = -1;
-		int ierr = -1;
-
-		if (c->tracees.len > 0) {
-			pfd[n].fd = sfd;
-			pfd[n].events = POLLIN;
-			isig = n++;
-		}
-		if (out_open) {
-			pfd[n].fd = outfd;
-			pfd[n].events = POLLIN;
-			iout = n++;
-		}
-		if (err_open) {
-			pfd[n].fd = errfd;
-			pfd[n].events = POLLIN;
-			ierr = n++;
-		}
+		int isig = poll_add(pfd, &n, sfd, c->tracees.len > 0);
+		int iout = poll_add(pfd, &n, outfd, out_open);
+		int ierr = poll_add(pfd, &n, errfd, err_open);
 
 		if (poll(pfd, (nfds_t)n, -1) < 0) {
 			/* LCOV_EXCL_START: poll errors are defensive. */
@@ -845,8 +896,139 @@ static void tctx_cleanup(struct tctx *c)
 	free(c->lb_err.buf);
 }
 
-int trace_run(char **argv, struct audit *au, int tty)
+/* Attach to an already running process with PTRACE_SEIZE, then drive the same
+ * event loop. There are no pipes: the process's output is reconstructed from
+ * its write(2) calls (see do_fd_exit). EXITKILL is deliberately not set — we do
+ * not own this process, so it must survive verba exiting. */
+static int trace_attach(pid_t target, struct audit *au)
 {
+	sigset_t mask;
+	sigset_t old;
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGCHLD);
+	sigprocmask(SIG_BLOCK, &mask, &old);
+	int sfd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
+	/* LCOV_EXCL_START: signalfd failure is defensive. */
+	if (sfd < 0) {
+		sigprocmask(SIG_SETMASK, &old, NULL);
+		return -1;
+	}
+	/* LCOV_EXCL_STOP */
+
+	long opts = PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEFORK |
+	            PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE |
+	            PTRACE_O_TRACEEXEC;
+	if (ptrace(PTRACE_SEIZE, target, 0, (void *)opts) != 0) {
+		int e = errno;
+		close(sfd);
+		sigprocmask(SIG_SETMASK, &old, NULL);
+		errno = e;
+		return -1;
+	}
+
+	/* SEIZE does not stop the tracee; INTERRUPT it to reach a known stop we
+	 * can start syscall-stepping from. */
+	/* LCOV_EXCL_START: a just-seized tracee always accepts INTERRUPT. */
+	if (ptrace(PTRACE_INTERRUPT, target, 0, 0) != 0) {
+		int e = errno;
+		close(sfd);
+		sigprocmask(SIG_SETMASK, &old, NULL);
+		errno = e;
+		return -1;
+	}
+	int st;
+	if (waitpid(target, &st, __WALL) < 0) {
+		close(sfd);
+		sigprocmask(SIG_SETMASK, &old, NULL);
+		return -1;
+	}
+	/* LCOV_EXCL_STOP */
+
+	struct tctx c;
+	memset(&c, 0, sizeof c);
+	c.au = au;
+	c.child = target;
+	c.attach = 1;
+
+	struct tracee *t = add_tracee(&c, target);
+	t->booted = 1;
+	resume(target, 0);
+
+	event_loop(&c, sfd, -1, -1, 0);
+	tctx_cleanup(&c);
+	close(sfd);
+	sigprocmask(SIG_SETMASK, &old, NULL);
+	return 0;
+}
+
+/* Close the parent's capture fds: the pty master, or the two pipe read ends. */
+static void close_capture(int tty, int master, int out_rd, int err_rd)
+{
+	if (tty) {
+		close(master);
+	} else {
+		close(out_rd);
+		close(err_rd);
+	}
+}
+
+/* LCOV_EXCL_START: the child's pre-execvp body cannot record coverage (gcov
+ * counters are discarded across execvp). */
+
+/* Child: become a session leader with the pty slave as controlling terminal,
+ * so isatty(1) is true, then point stdio at it. */
+static void child_tty_stdio(const char *slave, int master)
+{
+	setsid();
+	int sl = open(slave, O_RDWR);
+	if (sl >= 0) {
+		dup2(sl, STDIN_FILENO);
+		dup2(sl, STDOUT_FILENO);
+		dup2(sl, STDERR_FILENO);
+		if (sl > STDERR_FILENO)
+			close(sl);
+	}
+	close(master);
+}
+
+/* Child: point stdout/stderr at the pipe write ends and drop every pipe fd. */
+static void child_pipe_stdio(int *outp, int *errp)
+{
+	dup2(outp[1], STDOUT_FILENO);
+	dup2(errp[1], STDERR_FILENO);
+	close(outp[0]);
+	close(outp[1]);
+	close(errp[0]);
+	close(errp[1]);
+}
+
+/* Child half of the fork: wire up stdio, announce ourselves to ptrace, exec.
+ * On failure the errno is shipped back over the CLOEXEC pipe. Does not return. */
+static void child_exec(char **argv, int tty, const char *slave, int master,
+                       int *outp, int *errp, int sfd, int *execp,
+                       const sigset_t *old)
+{
+	sigprocmask(SIG_SETMASK, old, NULL);
+	if (tty)
+		child_tty_stdio(slave, master);
+	else
+		child_pipe_stdio(outp, errp);
+	close(sfd);
+	close(execp[0]);
+	ptrace(PTRACE_TRACEME, 0, 0, 0);
+	execvp(argv[0], argv);
+	int e = errno;
+	ssize_t w = write(execp[1], &e, sizeof e);
+	(void)w;
+	_exit(127);
+}
+/* LCOV_EXCL_STOP */
+
+int trace_run(char **argv, struct audit *au, int tty, pid_t follow)
+{
+	if (follow > 0)
+		return trace_attach(follow, au);
+
 	int outp[2] = {-1, -1};
 	int errp[2] = {-1, -1};
 	int master = -1;
@@ -873,12 +1055,7 @@ int trace_run(char **argv, struct audit *au, int tty)
 	int execp[2];
 	/* LCOV_EXCL_START: pipe setup failure is defensive. */
 	if (pipe2(execp, O_CLOEXEC)) {
-		if (tty)
-			close(master);
-		else {
-			close(outp[0]);
-			close(errp[0]);
-		}
+		close_capture(tty, master, outp[0], errp[0]);
 		return -1;
 	}
 	/* LCOV_EXCL_STOP */
@@ -905,43 +1082,10 @@ int trace_run(char **argv, struct audit *au, int tty)
 	}
 	/* LCOV_EXCL_STOP */
 
-	/* LCOV_EXCL_START: the child's pre-execvp body cannot record coverage
-	 * (gcov counters are discarded across execvp). */
-	if (child == 0) {
-		/* Child: wire up stdio, announce ourselves to ptrace, exec. On
-		 * failure the errno is shipped back over the CLOEXEC pipe. */
-		sigprocmask(SIG_SETMASK, &old, NULL);
-		if (tty) {
-			/* New session with the pty slave as the controlling
-		 * terminal: this is what makes isatty(1) true and gives
-		 * the child a terminal of its own. */
-			setsid();
-			int sl = open(slave, O_RDWR);
-			if (sl >= 0) {
-				dup2(sl, STDIN_FILENO);
-				dup2(sl, STDOUT_FILENO);
-				dup2(sl, STDERR_FILENO);
-				if (sl > STDERR_FILENO)
-					close(sl);
-			}
-			close(master);
-		} else {
-			dup2(outp[1], STDOUT_FILENO);
-			dup2(errp[1], STDERR_FILENO);
-			close(outp[0]);
-			close(outp[1]);
-			close(errp[0]);
-			close(errp[1]);
-		}
-		close(sfd);
-		close(execp[0]);
-		ptrace(PTRACE_TRACEME, 0, 0, 0);
-		execvp(argv[0], argv);
-		int e = errno;
-		ssize_t w = write(execp[1], &e, sizeof e);
-		(void)w;
-		_exit(127);
-	}
+	/* LCOV_EXCL_START: the child's pre-execvp call cannot record coverage. */
+	if (child == 0)
+		child_exec(argv, tty, slave, master, outp, errp, sfd, execp,
+	                   &old);
 	/* LCOV_EXCL_STOP */
 
 	/* parent */
@@ -969,12 +1113,7 @@ int trace_run(char **argv, struct audit *au, int tty)
 		waitpid(child, &st, 0);
 		au->exec_failed = 1;
 		au->exec_errno = exec_errno;
-		if (tty)
-			close(master);
-		else {
-			close(outp[0]);
-			close(errp[0]);
-		}
+		close_capture(tty, master, outp[0], errp[0]);
 		close(sfd);
 		sigprocmask(SIG_SETMASK, &old, NULL);
 		return 0;
@@ -989,12 +1128,7 @@ int trace_run(char **argv, struct audit *au, int tty)
 	int st;
 	/* LCOV_EXCL_START: losing the child before its first stop is defensive. */
 	if (waitpid(child, &st, 0) < 0) {
-		if (tty)
-			close(master);
-		else {
-			close(outp[0]);
-			close(errp[0]);
-		}
+		close_capture(tty, master, outp[0], errp[0]);
 		close(sfd);
 		sigprocmask(SIG_SETMASK, &old, NULL);
 		return -1;
@@ -1011,12 +1145,7 @@ int trace_run(char **argv, struct audit *au, int tty)
 	event_loop(&c, sfd, tty ? master : outp[0], tty ? -1 : errp[0], tty);
 	tctx_cleanup(&c);
 
-	if (tty)
-		close(master);
-	else {
-		close(outp[0]);
-		close(errp[0]);
-	}
+	close_capture(tty, master, outp[0], errp[0]);
 	close(sfd);
 	sigprocmask(SIG_SETMASK, &old, NULL);
 	return 0;

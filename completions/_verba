@@ -17,6 +17,7 @@ _verba()
 		'(-o --output)'{-o,--output}'[write the JSON report to FILE]:file:_files' \
 		'*--allow[treat writes under PREFIX as declared]:prefix:_files -/' \
 		'--tty[run the command on a pty (one combined stream)]' \
+		'--follow[attach to an already running process]:pid:_pids' \
 		'--heuristic[also run mistranslation checks (separate block)]' \
 		'--strict[run heuristics and count them toward the exit code]' \
 		'*--patterns[load extra errno<->phrase patterns from FILE]:file:_files' \

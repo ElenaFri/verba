@@ -227,6 +227,61 @@ static void skip_ws(struct jparse *p)
 	}
 }
 
+/* At the character just after a backslash. Decodes the escape and appends the
+ * resulting byte(s) to `b`, advancing p->pos. Returns 0, or -1 with `err`
+ * filled. */
+static int parse_escape(struct jparse *p, struct sbuf *b, char *err, size_t errn)
+{
+	unsigned char e = (unsigned char)p->s[p->pos];
+	if (e == '\0') {
+		pfail(p, "unterminated string", err, errn);
+		return -1;
+	}
+	if (e == 'u') {
+		p->pos++;
+		unsigned cp;
+		if (parse_hex4(p, &cp) < 0) {
+			pfail(p, "bad \\u escape", err, errn);
+			return -1;
+		}
+		if (cp >= 0xD800 && cp <= 0xDFFF) {
+			pfail(p, "unpaired surrogate escape", err, errn);
+			return -1;
+		}
+		sb_put_utf8(b, cp);
+		return 0;
+	}
+	char c;
+	switch (e) {
+	case '"':
+	case '\\':
+	case '/':
+		c = (char)e;
+		break;
+	case 'b':
+		c = '\b';
+		break;
+	case 'f':
+		c = '\f';
+		break;
+	case 'n':
+		c = '\n';
+		break;
+	case 'r':
+		c = '\r';
+		break;
+	case 't':
+		c = '\t';
+		break;
+	default:
+		pfail(p, "unknown escape", err, errn);
+		return -1;
+	}
+	p->pos++;
+	sb_put(b, (unsigned char)c);
+	return 0;
+}
+
 /* At the opening quote; returns a fresh NUL-terminated string, or NULL with
  * `err` filled. */
 static char *parse_string(struct jparse *p, char *err, size_t errn)
@@ -247,57 +302,10 @@ static char *parse_string(struct jparse *p, char *err, size_t errn)
 		}
 		if (c == '\\') {
 			p->pos++;
-			unsigned char e = (unsigned char)p->s[p->pos];
-			if (e == '\0') {
+			if (parse_escape(p, &b, err, errn) < 0) {
 				free(b.p);
-				pfail(p, "unterminated string", err, errn);
 				return NULL;
 			}
-			if (e == 'u') {
-				p->pos++;
-				unsigned cp;
-				if (parse_hex4(p, &cp) < 0) {
-					free(b.p);
-					pfail(p, "bad \\u escape", err, errn);
-					return NULL;
-				}
-				if (cp >= 0xD800 && cp <= 0xDFFF) {
-					free(b.p);
-					pfail(p, "unpaired surrogate escape",
-					      err, errn);
-					return NULL;
-				}
-				sb_put_utf8(&b, cp);
-				continue;
-			}
-			switch (e) {
-			case '"':
-			case '\\':
-			case '/':
-				c = e;
-				break;
-			case 'b':
-				c = '\b';
-				break;
-			case 'f':
-				c = '\f';
-				break;
-			case 'n':
-				c = '\n';
-				break;
-			case 'r':
-				c = '\r';
-				break;
-			case 't':
-				c = '\t';
-				break;
-			default:
-				free(b.p);
-				pfail(p, "unknown escape", err, errn);
-				return NULL;
-			}
-			p->pos++;
-			sb_put(&b, c);
 			continue;
 		}
 		if (c == '\n')
@@ -309,6 +317,94 @@ static char *parse_string(struct jparse *p, char *err, size_t errn)
 	return b.p;
 }
 
+/* Fold a parsed "key"/"val" pair into the object under construction. Takes
+ * ownership of `val` (stores it in *phrase, or frees it). Returns 0, or -1 with
+ * `err` filled. */
+static int apply_member(struct jparse *p, const char *key, char *val,
+                        char **phrase, int *code, int *seen_phrase,
+                        int *seen_errno, char *err, size_t errn)
+{
+	if (strcmp(key, "phrase") == 0) {
+		if (*seen_phrase) {
+			free(val);
+			pfail(p, "duplicate \"phrase\"", err, errn);
+			return -1;
+		}
+		if (val[0] == '\0') {
+			free(val);
+			pfail(p, "empty \"phrase\"", err, errn);
+			return -1;
+		}
+		*phrase = val;
+		*seen_phrase = 1;
+		return 0;
+	}
+	if (strcmp(key, "errno") == 0) {
+		if (*seen_errno) {
+			free(val);
+			pfail(p, "duplicate \"errno\"", err, errn);
+			return -1;
+		}
+		int c = errno_from_name(val);
+		free(val);
+		if (c == 0) {
+			pfail(p, "unknown errno name", err, errn);
+			return -1;
+		}
+		*code = c;
+		*seen_errno = 1;
+		return 0;
+	}
+	free(val);
+	pfail(p, "unknown key", err, errn);
+	return -1;
+}
+
+/* Parse one "key": "value" member and fold it into the object. Returns 0, or
+ * -1 with `err` filled (any temporaries freed). */
+static int parse_member(struct jparse *p, char **phrase, int *code,
+                        int *seen_phrase, int *seen_errno, char *err,
+                        size_t errn)
+{
+	if ((unsigned char)p->s[p->pos] != '"') {
+		pfail(p, "expected a key string", err, errn);
+		return -1;
+	}
+	char *key = parse_string(p, err, errn);
+	if (!key)
+		return -1;
+	skip_ws(p);
+	if (p->s[p->pos] != ':') {
+		free(key);
+		pfail(p, "expected ':'", err, errn);
+		return -1;
+	}
+	p->pos++;
+	skip_ws(p);
+	if ((unsigned char)p->s[p->pos] != '"') {
+		free(key);
+		pfail(p, "expected a string value", err, errn);
+		return -1;
+	}
+	char *val = parse_string(p, err, errn);
+	if (!val) {
+		free(key);
+		return -1;
+	}
+	int rc = apply_member(p, key, val, phrase, code, seen_phrase,
+	                      seen_errno, err, errn);
+	free(key);
+	return rc;
+}
+
+/* Release a half-built object and report failure. */
+static int obj_fail(char **phrase)
+{
+	free(*phrase);
+	*phrase = NULL;
+	return -1;
+}
+
 /* At '{'. On success *phrase (owned) and *code are set; on failure everything
  * is freed and *phrase is NULL. */
 static int parse_object(struct jparse *p, char **phrase, int *code, char *err,
@@ -316,77 +412,15 @@ static int parse_object(struct jparse *p, char **phrase, int *code, char *err,
 {
 	*phrase = NULL;
 	*code = 0;
-	int seen_phrase = 0, seen_errno = 0;
+	int seen_phrase = 0;
+	int seen_errno = 0;
 
 	p->pos++; /* '{' */
 	for (;;) {
 		skip_ws(p);
-		if ((unsigned char)p->s[p->pos] != '"') {
-			pfail(p, "expected a key string", err, errn);
-			goto fail;
-		}
-		char *key = parse_string(p, err, errn);
-		if (!key)
-			goto fail;
-		skip_ws(p);
-		if (p->s[p->pos] != ':') {
-			free(key);
-			pfail(p, "expected ':'", err, errn);
-			goto fail;
-		}
-		p->pos++;
-		skip_ws(p);
-		if ((unsigned char)p->s[p->pos] != '"') {
-			free(key);
-			pfail(p, "expected a string value", err, errn);
-			goto fail;
-		}
-		char *val = parse_string(p, err, errn);
-		if (!val) {
-			free(key);
-			goto fail;
-		}
-
-		if (strcmp(key, "phrase") == 0) {
-			if (seen_phrase) {
-				free(val);
-				free(key);
-				pfail(p, "duplicate \"phrase\"", err, errn);
-				goto fail;
-			}
-			if (val[0] == '\0') {
-				free(val);
-				free(key);
-				pfail(p, "empty \"phrase\"", err, errn);
-				goto fail;
-			}
-			*phrase = val;
-			seen_phrase = 1;
-		} else if (strcmp(key, "errno") == 0) {
-			if (seen_errno) {
-				free(val);
-				free(key);
-				pfail(p, "duplicate \"errno\"", err, errn);
-				goto fail;
-			}
-			int c = errno_from_name(val);
-			if (c == 0) {
-				free(val);
-				free(key);
-				pfail(p, "unknown errno name", err, errn);
-				goto fail;
-			}
-			*code = c;
-			seen_errno = 1;
-			free(val);
-		} else {
-			free(val);
-			free(key);
-			pfail(p, "unknown key", err, errn);
-			goto fail;
-		}
-		free(key);
-
+		if (parse_member(p, phrase, code, &seen_phrase, &seen_errno,
+		                 err, errn) < 0)
+			return obj_fail(phrase);
 		skip_ws(p);
 		if (p->s[p->pos] == ',') {
 			p->pos++;
@@ -397,18 +431,14 @@ static int parse_object(struct jparse *p, char **phrase, int *code, char *err,
 			break;
 		}
 		pfail(p, "expected ',' or '}'", err, errn);
-		goto fail;
+		return obj_fail(phrase);
 	}
 
 	if (!seen_phrase || !seen_errno) {
 		pfail(p, "object needs both \"phrase\" and \"errno\"", err, errn);
-		goto fail;
+		return obj_fail(phrase);
 	}
 	return 0;
-fail:
-	free(*phrase);
-	*phrase = NULL;
-	return -1;
 }
 
 /* At '['; appends struct pat entries to `pats`. */
@@ -458,7 +488,8 @@ static char *read_file(const char *path, char *err, size_t errn)
 		snprintf(err, errn, "%s: cannot open: %s", path, strerror(errno));
 		return NULL;
 	}
-	size_t cap = 8192, n = 0;
+	size_t cap = 8192;
+	size_t n = 0;
 	char *buf = xmalloc(cap);
 	size_t r;
 	while ((r = fread(buf + n, 1, cap - n, f)) > 0) {

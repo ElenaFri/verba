@@ -14,7 +14,7 @@ _verba()
 		cword=$COMP_CWORD
 	}
 
-	local opts='-h --help -V --version --json -o --output --allow --tty --heuristic --strict --patterns'
+	local opts='-h --help -V --version --json -o --output --allow --tty --heuristic --strict --patterns --follow'
 
 	# Options that take an argument.
 	case "$prev" in
@@ -26,6 +26,17 @@ _verba()
 		_filedir -d
 		return
 		;;
+	--follow)
+		# Complete with running PIDs when the helper is available.
+		if declare -F _pids >/dev/null 2>&1; then
+			_pids
+		else
+			COMPREPLY=($(compgen -W "$(command ps -eo pid= 2>/dev/null)" -- "$cur"))
+		fi
+		return
+		;;
+	*)
+		;;
 	esac
 
 	# Find the command word: the first non-option argument that is not itself
@@ -35,7 +46,7 @@ _verba()
 	for ((i = 1; i < cword; i++)); do
 		local w=${words[i]}
 		case "$w" in
-		-o|--output|--allow|--patterns)
+		-o|--output|--allow|--patterns|--follow)
 			((i++))	# skip the option's value
 			continue
 			;;

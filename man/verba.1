@@ -79,6 +79,17 @@ Run the command on a pty instead of pipes, for programs that change what they
 say when stdout is not a terminal. stdout and stderr are then captured as one
 combined stream (reported as \"tty\" in JSON).
 .TP
+.BR \-\-follow " " \fIPID\fR
+Attach to an already running process instead of launching a command, with
+.BR PTRACE_SEIZE (2).
+Its stdout and stderr cannot be redirected after the fact, so the words are
+reconstructed from the
+.BR write (2)
+calls it makes to file descriptors 1 and 2. Only the target and the descendants
+it spawns from the moment of attachment are followed; pre-existing children and
+threads are not. Cannot be combined with a command or with
+.BR \-\-tty .
+.TP
 .B \-\-heuristic
 Also run the phase-2 mistranslation checks
 .RI ( errno
