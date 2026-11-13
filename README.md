@@ -37,7 +37,11 @@ JSON).
 `--follow PID` audits a process that is already running: verba attaches to it
 (`PTRACE_SEIZE`) and reconstructs its words from the `write(2)` calls it makes to
 stdout and stderr. Only the target and the descendants it spawns after
-attachment are followed, and it is left running when verba exits.
+attachment are followed, and it is left running when verba exits. Because the
+writer's pid is known here, relative paths in a claim resolve against that
+process's cwd at the moment it spoke (`/proc/PID/cwd`); in launch mode the merged
+output stream cannot be attributed to one process, so relatives resolve against
+verba's own cwd.
 
 ## Usage
 

@@ -72,6 +72,7 @@ struct linebuf {
 	char *buf;
 	size_t len;
 	size_t cap;
+	char *cwd; /* resolution dir for lines emitted from this buffer, or NULL */
 };
 
 struct tctx {
@@ -307,7 +308,7 @@ static void push_event(struct tctx *c, pid_t pid, enum file_action action,
 /* ---- output capture ---- */
 
 static void emit_line(struct audit *au, unsigned long *order, int stream,
-                      const char *start, size_t len)
+                      const char *start, size_t len, const char *cwd)
 {
 	while (len > 0 && start[len - 1] == '\r')
 		len--;
@@ -315,12 +316,20 @@ static void emit_line(struct audit *au, unsigned long *order, int stream,
 	l->order = (*order)++;
 	l->stream = stream;
 	l->text = xstrndup(start, len);
+	l->cwd = cwd ? xstrdup(cwd) : NULL;
 	vec_push(&au->lines, l);
 }
 
+/* Append `n` bytes of a stream to its line buffer, emitting every completed
+ * line. `cwd` is the resolution dir to tag those lines with (the writer's cwd
+ * in --follow mode, NULL over a merged pipe/pty stream). */
 static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
-                    const char *data, size_t n)
+                    const char *data, size_t n, const char *cwd)
 {
+	if (cwd || lb->cwd) {
+		free(lb->cwd);
+		lb->cwd = cwd ? xstrdup(cwd) : NULL;
+	}
 	size_t need = lb->len + n + 1;
 	if (need > lb->cap) {
 		lb->cap = need;
@@ -332,7 +341,8 @@ static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
 	size_t start = 0;
 	for (size_t i = 0; i < lb->len; i++) {
 		if (lb->buf[i] == '\n') {
-			emit_line(c->au, &c->order, stream, lb->buf + start, i - start);
+			emit_line(c->au, &c->order, stream, lb->buf + start,
+		                  i - start, lb->cwd);
 			start = i + 1;
 		}
 	}
@@ -351,7 +361,7 @@ static void lb_feed(struct tctx *c, struct linebuf *lb, int stream,
 static void lb_flush(struct tctx *c, struct linebuf *lb, int stream)
 {
 	if (lb->len > 0)
-		emit_line(c->au, &c->order, stream, lb->buf, lb->len);
+		emit_line(c->au, &c->order, stream, lb->buf, lb->len, lb->cwd);
 	lb->len = 0;
 }
 
@@ -361,6 +371,9 @@ static void capture_write(struct tctx *c, pid_t pid, unsigned long addr,
                           size_t len, int stream)
 {
 	struct linebuf *lb = (stream == 2) ? &c->lb_err : &c->lb_out;
+	/* The tracee is stopped at the write(2) exit, so /proc/<pid>/cwd is
+	 * exactly its cwd at the time of this claim. */
+	char *cwd = base_dir(pid, AT_FDCWD);
 	char buf[4096];
 	size_t off = 0;
 	while (off < len) {
@@ -370,9 +383,10 @@ static void capture_write(struct tctx *c, pid_t pid, unsigned long addr,
 		size_t got = read_bytes(pid, addr + off, buf, want);
 		if (got == 0)
 			break; /* LCOV_EXCL_LINE: a live buffer yields its bytes */
-		lb_feed(c, lb, stream, buf, got);
+		lb_feed(c, lb, stream, buf, got, cwd);
 		off += got;
 	}
+	free(cwd);
 }
 
 /* ---- syscall handling ---- */
@@ -790,7 +804,7 @@ static int drain_fd(struct tctx *c, int fd, int stream, struct linebuf *lb,
 	for (;;) {
 		ssize_t n = read(fd, buf, sizeof buf);
 		if (n > 0) {
-			lb_feed(c, lb, stream, buf, (size_t)n);
+			lb_feed(c, lb, stream, buf, (size_t)n, NULL);
 			continue;
 		}
 		if (n == 0)
@@ -894,6 +908,8 @@ static void tctx_cleanup(struct tctx *c)
 	vec_free(&c->openfds, NULL);
 	free(c->lb_out.buf);
 	free(c->lb_err.buf);
+	free(c->lb_out.cwd);
+	free(c->lb_err.cwd);
 }
 
 /* Attach to an already running process with PTRACE_SEIZE, then drive the same

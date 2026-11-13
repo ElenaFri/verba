@@ -11,6 +11,10 @@ struct out_line {
 	unsigned long order; /* global interleave counter */
 	int stream;          /* 0 = tty (combined), 1 = stdout, 2 = stderr */
 	char *text;          /* line content, newline stripped */
+	char *cwd;           /* dir to resolve this line's relative paths against,
+	                      * captured when the line was emitted; NULL = use
+	                      * verba's own cwd (pipe/pty mode has no per-line
+	                      * attribution; only --follow knows the writer) */
 };
 
 /* ----- the deeds: one file-affecting syscall, as observed ----- */

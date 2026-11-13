@@ -198,7 +198,7 @@ static void test_extract_paths(void)
 		"wrote /no/such/abs/file and ./rel/one and ../rel/two "
 		"and ~/tilde and $HOME/dollar and bare/slash/word "
 		"(skip http://example.com/u) 'quoted/path'.",
-		&v);
+		NULL, &v);
 
 	CHECK(vec_has_suffix(&v, "/no/such/abs/file"));
 	CHECK(vec_has_suffix(&v, "/rel/one"));
@@ -215,15 +215,26 @@ static void test_extract_paths(void)
 
 	/* bare "~" and "$HOME" with no trailing component still expand. */
 	struct vec v2 = {0};
-	words_extract_paths("home is ~ exactly", &v2);
+	words_extract_paths("home is ~ exactly", NULL, &v2);
 	CHECK(vec_has_suffix(&v2, "/home/verbatest"));
 	vec_free(&v2, free_str);
 
 	/* a line with no path-like tokens yields nothing. */
 	struct vec v3 = {0};
-	words_extract_paths("just some words without slashes", &v3);
+	words_extract_paths("just some words without slashes", NULL, &v3);
 	CHECK(v3.len == 0);
 	vec_free(&v3, free_str);
+
+	/* a base cwd resolves relative claims against it, not verba's cwd — the
+	 * "cwd at the time of the claim" that --follow captures per writer. */
+	struct vec v4 = {0};
+	words_extract_paths("saved ./out.conf and nested/deep.txt",
+	                    "/base/verba/dir", &v4);
+	CHECK(vec_has_suffix(&v4, "/base/verba/dir/out.conf"));
+	CHECK(vec_has_suffix(&v4, "/base/verba/dir/nested/deep.txt"));
+	/* an absolute claim ignores the base cwd. */
+	CHECK(!vec_has_suffix(&v4, "/base/verba/dir/abs"));
+	vec_free(&v4, free_str);
 }
 
 /* ---- model.c ---- */
@@ -253,6 +264,7 @@ static void push_line(struct audit *au, int stream, const char *text)
 	l->order = au->lines.len;
 	l->stream = stream;
 	l->text = xstrdup(text);
+	l->cwd = NULL;
 	vec_push(&au->lines, l);
 }
 

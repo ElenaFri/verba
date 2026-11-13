@@ -110,7 +110,7 @@ static void collect_mentioned(const struct audit *au, struct vec *mentioned)
 {
 	for (size_t i = 0; i < au->lines.len; i++) {
 		const struct out_line *l = au->lines.data[i];
-		words_extract_paths(l->text, mentioned);
+		words_extract_paths(l->text, l->cwd, mentioned);
 	}
 }
 
@@ -125,7 +125,7 @@ static void check_faithless(const struct audit *au, struct vec *findings,
 			continue;
 
 		struct vec paths = {0};
-		words_extract_paths(l->text, &paths);
+		words_extract_paths(l->text, l->cwd, &paths);
 		for (size_t j = 0; j < paths.len; j++) {
 			const char *p = paths.data[j];
 			if (set_has(opened_write, p) || set_has(&reported, p))

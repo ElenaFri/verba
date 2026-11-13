@@ -27,11 +27,12 @@ static int already_flagged(const struct vec *findings, const char *path)
 }
 
 /* Does this output line name `path` (after the same canonicalisation the
- * mechanical checks use)? */
-static int line_names_path(const char *line, const char *path)
+ * mechanical checks use)? Relative paths resolve against `base_cwd`. */
+static int line_names_path(const char *line, const char *base_cwd,
+                           const char *path)
 {
 	struct vec paths = {0};
-	words_extract_paths(line, &paths);
+	words_extract_paths(line, base_cwd, &paths);
 	int hit = 0;
 	for (size_t i = 0; i < paths.len; i++)
 		if (strcmp(paths.data[i], path) == 0) {
@@ -71,7 +72,7 @@ static void check_event(const struct audit *au, const struct file_event *e,
 
 	for (size_t i = 0; i < au->lines.len; i++) {
 		const struct out_line *l = au->lines.data[i];
-		if (!line_names_path(l->text, e->path))
+		if (!line_names_path(l->text, l->cwd, e->path))
 			continue;
 
 		int codes[MAX_CODES];

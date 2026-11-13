@@ -71,9 +71,14 @@
   paths (those containing a slash), `~/…`, `$HOME/…`; URLs are skipped.
 - [x] Canonicalize: `..`, trailing slashes, symlink resolution. Paths that are
   the same after canonicalization are the same word.
-- [~] Resolve relative paths against the cwd **at the time of the claim**.
-  MVP resolves against a single cwd (verba's startup cwd, shared with the
-  child); per-claim cwd tracking across a child `chdir` is deferred.
+- [x] Resolve relative paths against the cwd **at the time of the claim**.
+  In `--follow` (attach) mode this is exact: the writer's pid is known and the
+  tracee is stopped at the `write(2)` exit, so `/proc/<pid>/cwd` is read per
+  claim and each output line carries its own resolution dir. In launch mode
+  stdout/stderr are a single merged stream shared by the child and all its
+  descendants, so a line cannot be attributed to one process; those lines keep
+  resolving against verba's startup cwd (the child's initial cwd) — the
+  documented launch-mode limitation.
 
 ### 1.4 Reconciliation engine
 

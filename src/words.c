@@ -107,8 +107,9 @@ static int looks_like_path(const char *tok)
 	return 0;
 }
 
-/* Expand ~ / $HOME and make absolute against cwd; returns owned absolute path. */
-static char *to_absolute(const char *tok)
+/* Expand ~ / $HOME and make absolute; relative paths resolve against `base_cwd`
+ * (or verba's cwd when it is NULL). Returns an owned absolute path. */
+static char *to_absolute(const char *tok, const char *base_cwd)
 {
 	const char *home = getenv("HOME");
 	char *expanded;
@@ -127,17 +128,22 @@ static char *to_absolute(const char *tok)
 	if (expanded[0] == '/')
 		return expanded;
 
-	char cwd[4096];
 	char *abs;
-	if (getcwd(cwd, sizeof cwd))
-		abs = path_join(cwd, expanded);
-	else
-		abs = path_join("/", expanded); /* LCOV_EXCL_LINE: getcwd rarely fails */
+	if (base_cwd && base_cwd[0] == '/') {
+		abs = path_join(base_cwd, expanded);
+	} else {
+		char cwd[4096];
+		if (getcwd(cwd, sizeof cwd))
+			abs = path_join(cwd, expanded);
+		else
+			abs = path_join("/", expanded); /* LCOV_EXCL_LINE: getcwd rarely fails */
+	}
 	free(expanded);
 	return abs;
 }
 
-void words_extract_paths(const char *line, struct vec *out)
+void words_extract_paths(const char *line, const char *base_cwd,
+                         struct vec *out)
 {
 	char *copy = xstrdup(line);
 	char *save = NULL;
@@ -149,7 +155,7 @@ void words_extract_paths(const char *line, struct vec *out)
 			free(clean);
 			continue;
 		}
-		char *abs = to_absolute(clean);
+		char *abs = to_absolute(clean, base_cwd);
 		char *canon = path_canon(abs);
 		free(abs);
 		free(clean);

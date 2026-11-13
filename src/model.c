@@ -41,6 +41,7 @@ void out_line_free(void *p)
 {
 	struct out_line *l = p;
 	free(l->text);
+	free(l->cwd);
 	free(l);
 }
 

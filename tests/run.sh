@@ -202,7 +202,11 @@ check_findings "crasher: signal + success text -> discourse mismatch" 'discourse
 # verba can audit an already running process: it attaches with PTRACE_SEIZE and
 # reconstructs the "words" from the write(2) calls the process makes to fd 1/2.
 # The target blocks on a FIFO until we have attached (confirmed via
-# /proc/PID/status TracerPid), then makes a faithless claim.
+# /proc/PID/status TracerPid), then cd's into a scratch dir and makes a
+# faithless claim naming a *relative* path. Attach mode reads /proc/PID/cwd at
+# the write(2), so verba must resolve that claim against the dir the target
+# moved into (WORK/attach-sub), not verba's own cwd — this is what proves
+# per-claim cwd tracking end to end.
 #
 # Seizing a *sibling* (non-descendant, same uid) only succeeds when Yama's
 # ptrace_scope is 0 (classic ptrace) or Yama is absent. On a hardened box
@@ -213,12 +217,13 @@ attach_fifo="$work/attach.fifo"
 if [ "$ptrace_scope" = "0" ] && command -v mkfifo >/dev/null 2>&1 &&
 	mkfifo "$attach_fifo" 2>/dev/null && [ -r /proc/self/status ]; then
 	attach_pidfile="$work/attach.pid"
-	attach_target="$work/attach-claimed.conf"
+	attach_sub="$work/attach-sub"
+	mkdir -p "$attach_sub"
 	: > "$attach_pidfile"
 	# The target's own stdout goes to /dev/null; verba still sees the bytes
 	# through the write(2) it intercepts.
 	sh ./fixtures/attach-liar.sh "$attach_pidfile" "$attach_fifo" \
-		"$attach_target" >/dev/null 2>&1 &
+		"$attach_sub" >/dev/null 2>&1 &
 	tgt=$!
 
 	i=0
@@ -250,8 +255,10 @@ if [ "$ptrace_scope" = "0" ] && command -v mkfifo >/dev/null 2>&1 &&
 		else
 			bad "attach exit (want 1, got $code)"
 		fi
-		check_findings "attach reconstructs output and flags the claim" \
-			"faithless_claim WORK/attach-claimed.conf" "$out"
+		# Resolved against the target's cwd (WORK/attach-sub), not verba's:
+		# proof that attach mode tracks the cwd at the time of the claim.
+		check_findings "attach resolves a relative claim against the writer's cwd" \
+			"faithless_claim WORK/attach-sub/attach-rel.conf" "$out"
 	else
 		echo go > "$attach_fifo" 2>/dev/null
 		wait "$tgt" 2>/dev/null
